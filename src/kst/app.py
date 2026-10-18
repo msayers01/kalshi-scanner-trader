@@ -472,6 +472,7 @@ class Application:
             sup.add("kalshi_ws", self.md.run_ws, critical=True)
         else:
             sup.add("poll_books", self.md.run_poll_books, critical=True)
+            sup.add("poll_ui_books", self.md.run_poll_ui_books)
             sup.add("poll_trades", self.md.run_poll_trades)
         sup.add("settlement_watch", self._settlement_watch)
         if s.feeds.crypto.enabled and self.crypto_feed.source == "coinbase":

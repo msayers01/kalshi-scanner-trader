@@ -252,6 +252,34 @@ class MarketDataService:
                     log.warning("poll_books_error", error=str(exc))
             await asyncio.sleep(max(0.2, self.cfg.poll_books_interval_s - (time.monotonic() - t0)))
 
+    UI_LIVE = "ui_live"  # focus source: books a UI client is watching right now
+
+    async def run_poll_ui_books(self) -> None:
+        """REST mode: refresh only the books open in the UI every `ui_book_interval_s` (one request), so the
+        manual ticket's Bid/Mid/Ask track the market far faster than the 3 s focus-set poll."""
+        interval = self.cfg.ui_book_interval_s
+        if interval <= 0:
+            return
+        while True:
+            t0 = time.monotonic()
+            tickers = sorted(self._focus_requests.get(self.UI_LIVE, set()))[:5]
+            if tickers:
+                try:
+                    now = self.clock.now_ms()
+                    for row in await self.rest.orderbooks(tickers):
+                        t = row.get("ticker", "")
+                        if t not in self._focus:
+                            continue  # closed while the request was in flight
+                        bids, asks = parse_rest_orderbook(row)
+                        self.books.setdefault(t, OrderBook(t)).apply_snapshot(bids, asks, now)
+                        self.bus.publish(BookUpdated(now, t))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self.errors += 1
+                    log.warning("poll_ui_books_error", error=str(exc))
+            await asyncio.sleep(max(0.2, interval - (time.monotonic() - t0)))
+
     async def run_poll_trades(self, interval_s: float = 5.0) -> None:
         """Exchange-wide public trades since the last poll (feeds the paper maker-fill model)."""
         self._last_trade_ts = self.clock.now_ms() // 1000
