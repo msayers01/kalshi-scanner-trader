@@ -83,7 +83,7 @@
 | Pre-trade risk | **Chain of responsibility** | Each check is a small pure function, so checks are easy to add, test, and report ("rejected by `MaxExposurePerEvent`"). |
 | Orders and engine state | **Explicit state machines** | Illegal transitions raise errors. `RUNNING → PAUSED → KILLED` is persisted, so a restart after a kill stays killed. |
 | Commands from UI and Discord | **Command service (CQRS-lite)** | Writes go through `ControlService`, which validates, audits, and executes. Reads come from in-memory projections. The web UI and Discord share exactly the same semantics. |
-| Exchange vs paper vs replay | **Adapter + factory** | The `Broker` protocol has `LiveBroker`, `PaperBroker`, and (replay) `PaperBroker` with `ManualClock`. Market-data sources are WS, REST polling, or replay. Strategy code is identical in all modes. |
+| Exchange vs paper (vs replay) | **Adapter + factory** | The `Broker` protocol has `LiveBroker` and `PaperBroker`. Market-data sources are WS or REST polling. Strategy code is identical in all modes. Replay (`PaperBroker` + `ManualClock` over recordings) is **(roadmap)**. |
 | Persistence | **Repository + async write-behind queue** | DB writes never block the trading loop. |
 | Long-running tasks | **Supervisor** | Crashed tasks restart with backoff. Crashes of *critical* tasks escalate to PAUSE or KILL. |
 | Wiring | **Composition root** (`app.py`), manual dependency injection | No DI framework magic. One file shows how the system is assembled. |
@@ -105,13 +105,13 @@
 | Web backend | **FastAPI** + **uvicorn** | Async-native, gives WebSocket and REST in one app, auto OpenAPI docs, and runs in the same event loop as the engine. |
 | Web frontend | **React 19 + TypeScript + Vite + Zustand**, plain CSS | Small and fast, with one WebSocket feeding a single store. No component library, to keep the UI lean ("only the necessities"). |
 | Discord | **discord.py 2.x** (slash commands + persistent button views) | Mature, asyncio-native, and runs in the same loop. |
-| LLM | **OpenAI-compatible HTTP** (covers Ollama, LM Studio, vLLM, llama.cpp server, OpenAI) + **Anthropic Messages API** (via httpx) | One generic adapter covers every local runtime. We call the HTTP APIs directly so we can control caching, budgets, and timeouts precisely. |
-| Persistence | **SQLite (WAL)** via **SQLAlchemy 2.0 async + aiosqlite**, migrations via **Alembic** | Zero-ops for a single user, with separate DB files per mode (`paper`, `demo`, `live`) so P&L never mixes. Postgres is a URL change away. |
+| LLM | **OpenAI-compatible HTTP** via httpx (covers Ollama, LM Studio, vLLM, llama.cpp server, OpenAI) + the official **`anthropic` SDK** | One generic adapter covers every local runtime. The Claude adapter uses the SDK for prompt caching, JSON-schema structured output, and low effort. Budgets and timeouts are enforced by the gate, not the providers. |
+| Persistence | **SQLite (WAL)** via **SQLAlchemy 2.0 async + aiosqlite** | Zero-ops for a single user, with separate DB files per mode (`paper`, `demo`, `live`) so P&L never mixes. Tables are created at startup in v0.1; add Alembic before the first schema change on real data (`docs/RUNBOOK.md`). Postgres is a URL change away. |
 | Logging | **structlog** (JSON to file, pretty console) | Machine-parseable logs. The P&L ledger also goes to `data/pnl/`. |
-| CLI | **Typer** | `kst run`, `kst scan`, `kst llm-packet`, `kst check`, `kst replay`. |
+| CLI | **Typer** | `kst run`, `kst scan`, `kst llm-packet`, `kst check`, `kst status/pause/resume/kill`, `kst report`. |
 | Tests | **pytest**, **pytest-asyncio**, **respx**, **hypothesis** (property tests for money and book math) | |
-| Lint and type checks | **ruff** (lint + format), **mypy** (strict on `domain`, `pricing`, `risk`, `strategies`) | |
-| CI | GitHub Actions: ruff, mypy, pytest, web typecheck and build | |
+| Lint and type checks | **ruff** (lint + format), **mypy** (`disallow_untyped_defs` everywhere except `api` and `discord_bot`; pydantic plugin) | |
+| CI | GitHub Actions (`.github/workflows/ci.yml`): ruff, mypy, pytest, web typecheck and build | |
 
 ---
 
@@ -147,13 +147,14 @@ always quoted on the YES leg). Positions are signed: `+q` = q YES contracts,
 ```
 src/kst/
 ├── core/          infrastructure primitives: fixedpoint, types, events, bus, clock, supervisor, logging
-├── domain/        pure domain: Market/Event/Series, PriceGrid, OrderBook, Order (+state machine), Position, FeeModel
+├── domain/        pure domain: Market/Event/Series, PriceGrid, OrderBook, Order (+state machine), Position, FeeModel,
+│                  views (CatalogView/BookView read-only protocols the pure layers depend on)
 ├── kalshi/        ADAPTER: auth signer, token-bucket rate limiter, async REST client, WS client, JSON→domain parsing
-├── marketdata/    MarketCatalog (universe), MarketDataService (WS | REST-poll | replay sources → books), Recorder
+├── marketdata/    MarketCatalog (universe), MarketDataService (WS | REST-poll sources → books), Recorder (JSONL.gz)
 ├── feeds/         ADAPTERS: crypto spot/index (Kalshi CF Benchmarks channel, Coinbase fallback), weather (Open-Meteo, NWS)
 ├── pricing/       pure fair-value math: digital/range pricing w/ averaging window, EWMA vol, weather ensemble,
 │                  price calibration (favorite-longshot), Bayesian combination with market price, model resolver
-├── scanner/       features, signal detectors (structural arb, model edge, MM opportunity), ranking → ScanSnapshot
+├── scanner/       signals (structural arb, taker edge), service (chunked async scan, tags, ranking → ScanSnapshot)
 ├── strategies/    Strategy ABC, router, Kelly sizing, EV-based exits, structural_arb, edge_taker, market_maker
 ├── risk/          RiskLimits (runtime-editable), pre-trade check chain, RiskEngine (breakers, daily counters)
 ├── execution/     Broker protocol, PaperBroker, LiveBroker, OrderManager (declarative reconciliation)
@@ -161,9 +162,9 @@ src/kst/
 ├── llm/           decision-packet builder, providers (OpenAI-compatible, Anthropic), LLMGate (cache, budget, batching)
 ├── engine/        AutoTrader (orchestration loop), ControlService (commands), EngineState store
 ├── persistence/   SQLAlchemy tables, async DB, write-behind repository
-├── api/           FastAPI app: REST routes, WebSocket hub (topic coalescing), auth, static UI hosting
-├── discord_bot/   bot, slash commands, persistent control-panel buttons, notifier (rate-limited)
-├── backtest/      replay of recorded sessions through the same pipeline (ManualClock + PaperBroker)
+├── api/           app (FastAPI routes, bearer auth, static UI), hub (WebSocket topic coalescing), serialize
+├── discord_bot/   bot (slash commands, persistent control-panel view, notifier), formatting (embeds)
+├── backtest/      (roadmap) replay of recorded sessions through the same pipeline; empty package today
 ├── config.py      typed settings tree (YAML + env)
 ├── app.py         composition root: build_app(settings) → Application (start/stop)
 └── cli.py         Typer CLI
@@ -182,9 +183,11 @@ api, discord_bot, cli ──► engine ──► strategies, risk, scanner, llm.
 adapters (kalshi, feeds, llm.providers, persistence, execution.live/paper) implement ports used by engine/services
 ```
 
-`domain`, `pricing`, `risk.checks`, and `strategies` must not import `kalshi`,
-`api`, `discord_bot`, `httpx`, `fastapi`, or `discord`. CI enforces this with a
-test (`tests/test_architecture.py`).
+`domain`, `pricing`, `strategies`, `risk.checks`, `risk.limits`, and
+`scanner.signals` must not import `kalshi`, `api`, `discord_bot`, `persistence`,
+`execution`, `httpx`, `fastapi`, `discord`, `websockets`, or `sqlalchemy`.
+`tests/test_architecture.py` enforces this, and also that only `execution/`,
+`engine/control.py`, and `app.py` place orders.
 
 ---
 
@@ -269,7 +272,7 @@ Button/slash command or HTTP POST /api/control/kill
 | `paper` (default) | live public data (WS if keys, else REST polling) | `PaperBroker` simulated against live books and trades | `data/kst_paper.db` | Safe default. Validate strategies here first. |
 | `demo` | Kalshi demo env | `LiveBroker` → demo API | `data/kst_demo.db` | Demo keys. Exercises the real order lifecycle. |
 | `live` | Kalshi prod | `LiveBroker` → prod API | `data/kst_live.db` | Requires `mode: live` in config **and** the `--i-understand-live-trading` CLI flag. |
-| `replay` | recorded JSONL.gz | `PaperBroker` + `ManualClock` | `data/kst_replay.db` | Backtest the same code path. |
+| `replay` **(roadmap)** | recorded JSONL.gz | `PaperBroker` + `ManualClock` | `data/kst_replay.db` | Not implemented yet. The recorder already writes the input files. |
 
 The **scanner-only** run (`kst scan` or `engine.autotrade: false`) starts
 everything except order submission. The UI trade ticket still works for manual
@@ -316,14 +319,13 @@ SQLite with one file per mode, WAL enabled. Tables (`persistence/tables.py`):
 | `orders` | every order and its latest state, with strategy attribution and `client_order_id` |
 | `fills` | every fill: price, qty, fee, taker/maker, strategy |
 | `settlements` | settled positions and payouts |
-| `positions_snapshot` | periodic position snapshots |
 | `equity_snapshots` | equity, cash, realized/unrealized, exposure, once a minute |
 | `daily_pnl` | one row per trading day: realized, fees, trades, markets entered, win rate, per-strategy JSON |
 | `llm_decisions` | provider, model, ticker, verdict, confidence, reason, tokens, packet hash |
 | `audit_log` | actor, action, payload: kill, pause, limit edits, manual orders |
 | `kv_state` | engine state, runtime risk-limit overrides, daily counters |
 
-**Files.** `data/pnl/YYYY-MM-DD.json` holds the daily P&L ledger.
+**Files.** `data/pnl/<day>_<mode>.json` holds the daily P&L ledger.
 `data/logs/kst.jsonl` holds structured logs. `data/recordings/` holds market
 data recordings for replay.
 
@@ -349,8 +351,12 @@ exit iff liquidation value ≥ hold value − margin            # EV-based, not 
 | `market_maker` | liquid markets, maker-fee-free series preferred | Avellaneda–Stoikov quoting in logit space around q̂ with inventory skew and toxicity filters |
 | (calibrated prior) | any market, used when no specific model exists | Empirical favorite-longshot calibration of Kalshi prices (Bürgi, Deng & Whelan 2025). Used by `market_maker` in the extremes band. Disabled until fitted. |
 
-The router maps markets to strategies by rules in config (series, category,
-model availability, and LLM verdict).
+The router (`strategies/router.py`) picks one strategy per market:
+`market_maker` if the series is listed in `strategies.market_maker.series`,
+else `edge_taker` if a fair-value model covers the market, else `market_maker`
+if the calibrated prior applies, else nothing. Structural arb runs separately
+over the scanner's event-level opportunities. The LLM verdict never routes; it
+only gates new entries (section 13).
 
 ---
 
@@ -359,8 +365,10 @@ model availability, and LLM verdict).
 - **Scope.** The gate decides only ENTER or SKIP for *new* entries (plus an
   optional side bias). It never picks prices, sizes, or exits.
 - **Token frugality.**
-  - It is called only for candidates that passed the deterministic filters,
-    and by default only for markets *without* a quant model.
+  - It is asked only when a strategy already wants to *enter* a market
+    (`llm.scope: all`, the default; `unmodeled_only` skips modeled markets).
+    Exits, re-quotes, and `llm.bypass_strategies` (default: `structural_arb`)
+    never wait on it.
   - Calls are batched (N markets per call) in a compact pipe-delimited table
     with numeric row IDs.
   - The JSON reply has a ~12-word reason cap.
@@ -389,7 +397,7 @@ model availability, and LLM verdict).
 |---|---|
 | A fair-value model | Implement `pricing.base.FairValueModel` and register it in `pricing/resolver.py` with series or category rules. Add tests with closed-form checks. |
 | A strategy | Subclass `strategies.base.Strategy`, register it in `strategies/router.py`, add a config block, and document the math in `docs/STRATEGIES.md`. |
-| A risk check | Add a function in `risk/checks.py`, append it to `DEFAULT_CHAIN`, and add a limit field to `RiskLimits`. |
+| A risk check | Add a function in `risk/checks.py`, append it to `ALWAYS` (every order) or `ENTRY_ONLY` (orders that open exposure), and add a limit field to `RiskLimits`. |
 | An LLM provider | Implement `llm.providers.LLMProvider` (`complete(system, user, max_tokens) -> LLMResult`). |
 | A reference data feed | Implement it in `feeds/` and publish `ReferencePriceUpdated` (or a domain-specific event). |
 | A UI panel | Add a component under `web/src/components/` and subscribe to a hub topic in `web/src/store.ts`. |
@@ -402,12 +410,16 @@ model availability, and LLM verdict).
   Kelly, exits, risk checks, position accounting) is unit tested with
   closed-form and edge cases, plus property tests where invariants exist (book
   never crossed after a snapshot, `Price × Qty` exact).
-- **Adapters** use `respx`-mocked REST, a fake WS server for the WS client, and
-  signature verification of the auth signer against a public key.
-- **Integration.** Paper engine end-to-end with a synthetic market-data source
-  and the `PaperBroker` (`tests/test_engine_paper.py`), plus FastAPI routes via
-  ASGI transport.
+- **Adapters** use `respx`-mocked REST, recorded JSON fixtures
+  (`tests/fixtures/`), and signature verification of the auth signer against a
+  public key. The WS client has no fake-server test yet **(roadmap)**.
+- **Integration.** The `Harness` fixture (`tests/conftest.py`) wires a full
+  paper engine with no network: catalog, books, risk, OMS, `PaperBroker`,
+  portfolio, and ControlService (`tests/test_trading.py`). FastAPI routes are
+  tested via ASGI transport (`tests/test_api.py`).
 - **Architecture test.** Enforces the dependency rule in section 6.
+- **Live smoke test.** `uv run kst run --autotrade` in paper mode against real
+  public data. Watch `risk_rejected` counts, order churn, and loop lag.
 
 ---
 
@@ -420,7 +432,12 @@ model availability, and LLM verdict).
   treated conservatively.
 - **Settlement-source nuances** (BRTI 60 s average, NWS/Weather Company highs)
   are modeled. Exotic or custom strikes are skipped by the models.
+- **Unauthenticated catalog.** Without API keys, heavy `/markets` pages are
+  throttled, so the universe is limited to markets closing within
+  `universe.max_hours_to_close` (24 h by default). See `docs/KALSHI_API_NOTES.md`.
+- **No backtester yet.** The only validation path today is paper trading, so
+  model parameters are uncalibrated defaults. See `docs/ROADMAP.md`.
 - **Sports, politics, and economics** have no quant model in v0.1. They are
   tradable only via the calibrated prior + LLM gate (maker-only). See
-  `docs/ROADMAP.md` for planned models: economic nowcasts, sports win
-  probability, and implied vol from options.
+  `docs/ROADMAP.md` for planned models: economic nowcasts and sports win
+  probability.
