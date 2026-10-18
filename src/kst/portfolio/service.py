@@ -207,6 +207,15 @@ class PortfolioService:
             self._day = _Day(self._day.day, eq, eq)
         log.info("portfolio_restored", cash=self.cash / MICROS_PER_DOLLAR, positions=len(self.positions))
 
+    def reset_paper(self, cash_usd: float) -> None:
+        """Paper only: start over with `cash_usd` and no positions (caller checks we're flat). Today's stats
+        restart from the new balance, so daily-loss and drawdown breakers measure from it."""
+        self.cash = int(cash_usd * MICROS_PER_DOLLAR)
+        self.positions = {p.ticker: p for p in self.positions.values() if p.qty}
+        self._day = _Day(self._day.day, self.cash, self.cash)
+        log.info("paper_reset", cash=cash_usd)
+        self._save()
+
     def _save(self) -> None:
         self._dirty = True
         if self.persist is not None and self.mode in (Mode.PAPER, Mode.REPLAY):

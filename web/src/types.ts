@@ -7,6 +7,8 @@ export interface Status {
   state_reason: string;
   state_since_ms: number;
   autotrade: boolean;
+  preset: string | null;
+  auto_resume: boolean;
   live_armed: boolean;
   equity: number;
   cash: number;
@@ -221,6 +223,17 @@ export interface Note {
 }
 
 export type Limits = Record<string, number>;
+
+// Mirrors src/kst/presets.py Preset.to_dict().
+export interface Preset {
+  key: string;
+  label: string;
+  bankroll_usd: number;
+  summary: string;
+  limits: Record<string, number>;
+  arb_basket_usd: number;
+  hands_off: { autotrade: boolean; auto_resume: boolean; llm_fallback: string };
+}
 
 export type EquityRange = "TODAY" | "24H" | "1W" | "1M" | "3M" | "1Y" | "ALL";
 
