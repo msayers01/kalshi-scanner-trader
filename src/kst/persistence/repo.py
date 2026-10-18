@@ -317,6 +317,25 @@ class Repository:
             )
             return list((await s.execute(q)).scalars())
 
+    async def equity_points(self, since_ms: int) -> list[tuple[int, float]]:
+        """(ts_ms, equity) since `since_ms`, oldest first, plus the last point before it (the range baseline)."""
+        async with self.db.session() as s:
+            prev = (
+                await s.execute(
+                    select(EquitySnapshotRow.ts_ms, EquitySnapshotRow.equity)
+                    .where(EquitySnapshotRow.ts_ms < since_ms)
+                    .order_by(desc(EquitySnapshotRow.ts_ms))
+                    .limit(1)
+                )
+            ).first()
+            rows = await s.execute(
+                select(EquitySnapshotRow.ts_ms, EquitySnapshotRow.equity)
+                .where(EquitySnapshotRow.ts_ms >= since_ms)
+                .order_by(EquitySnapshotRow.ts_ms)
+            )
+            out = [(int(t), float(e)) for t, e in rows]
+        return ([(int(prev[0]), float(prev[1]))] if prev is not None else []) + out
+
     async def audit_log(self, n: int = 100) -> list[AuditRow]:
         async with self.db.session() as s:
             return list((await s.execute(select(AuditRow).order_by(desc(AuditRow.ts_ms)).limit(n))).scalars())

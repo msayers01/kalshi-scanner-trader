@@ -96,6 +96,16 @@ async def test_manual_order_goes_through_risk(tmp_path: Path) -> None:
             )
         ).json()
         assert not r3["ok"] and "FatFinger" in r3["reason"]
+        # Sell all: open again, then close through the endpoint.
+        await c.post(
+            "/api/orders", json={"ticker": "M", "side": "yes", "price": 0.42, "contracts": 3, "tif": "ioc"}
+        )
+        assert app.portfolio.positions["M"].qty == 300
+        r4 = (await c.post("/api/positions/M/close")).json()
+        assert r4["ok"] and r4["filled"] == 3 and app.portfolio.positions["M"].qty == 0
+        assert (await c.post("/api/positions/M/close")).json()["reason"] == "no open position"
+        evil = await c.post("/api/positions/M/close", headers={"Origin": "https://evil.example"})
+        assert evil.status_code == 403
 
 
 async def test_token_required_when_configured(tmp_path: Path) -> None:

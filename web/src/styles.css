@@ -110,6 +110,28 @@ td.market { max-width: 420px; font-family: var(--sans); }
 .sig-pos { background: color-mix(in srgb, var(--pos) 25%, transparent); color: var(--pos); }
 .sig-neg { background: color-mix(in srgb, var(--neg) 25%, transparent); color: var(--neg); }
 .sig-wide { color: var(--warn); }
+/* scanner column filters */
+.grid th.th-filter { padding: 0; }
+.th-btn { background: none; border: none; color: inherit; font: inherit; padding: 4px 8px; cursor: pointer; width: 100%; text-align: inherit; display: inline-flex; gap: 3px; align-items: center; justify-content: flex-end; }
+.left > .th-btn { justify-content: flex-start; }
+.th-btn:hover, .th-btn[aria-expanded="true"] { color: var(--text); }
+th.filtered .th-btn { color: var(--accent); }
+.th-sort { font-size: 9px; }
+.th-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.popover { position: absolute; top: 100%; left: 0; z-index: 5; min-width: 210px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.35); text-align: left; color: var(--text); font-weight: 400; display: grid; gap: 8px; }
+.popover.right { left: auto; right: 0; }
+.pop-sort { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.pop-sort button { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 4px; cursor: pointer; font-size: 11px; }
+.pop-sort button.on { border-color: var(--accent); color: var(--accent); }
+.pop-field { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
+.pop-field input { color: var(--text); width: 100%; }
+.pop-range { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.pop-set { display: grid; gap: 4px; font-size: 12px; }
+.pop-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 10px; border-bottom: 1px solid var(--border); align-items: center; }
+.chip { display: inline-flex; align-items: center; gap: 2px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--text); border-radius: 10px; padding: 1px 4px 1px 8px; font-size: 11px; }
+.chip button { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 3px; font-size: 13px; line-height: 1; }
+.chip button:hover { color: var(--text); }
 .st-filled { color: var(--pos); }
 .st-rejected { color: var(--neg); }
 .st-canceled { color: var(--muted); }
@@ -141,7 +163,37 @@ td.market { max-width: 420px; font-family: var(--sans); }
 .fields input, .fields select { width: 100%; color: var(--text); }
 .ticket-stats { display: flex; flex-wrap: wrap; gap: 4px 12px; font: 11px var(--mono); margin-top: 6px; }
 .ticket-result { margin-top: 6px; font-size: 12px; }
-.position-box { margin-top: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
+.position-box { margin-top: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; display: flow-root; }
+.position-box .sell-all { float: right; margin-left: 8px; }
+
+.kpi-btn { background: none; border: none; padding: 0; text-align: left; cursor: pointer; }
+.kpi-btn:hover .kpi-value { color: var(--accent); }
+.link.back { padding: 0; margin-bottom: 2px; }
+
+/* portfolio chart (right panel when no market is selected) */
+.panel.portfolio { overflow: auto; }
+.pchart { display: flex; flex-direction: column; padding: 10px 12px 4px; min-height: 280px; flex: 1; }
+.pchart-value { font: 600 28px var(--mono); letter-spacing: -0.01em; margin-top: 2px; }
+.pchart-change { font: 600 13px var(--mono); margin-top: 2px; }
+.pchart-change .muted { font-family: var(--sans); font-weight: 400; }
+.pchart-plot { flex: 1; min-height: 140px; margin-top: 8px; position: relative; display: flex; }
+.pchart-plot svg { display: block; touch-action: none; cursor: crosshair; }
+.pchart-plot .empty { margin: auto; max-width: 300px; }
+.pchart-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.pchart-base { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.6; }
+.pchart-cross { stroke: var(--muted); stroke-width: 1; opacity: 0.7; }
+.pchart-dot { stroke: var(--panel); stroke-width: 2; }
+.tone-pos .pchart-line { stroke: var(--pos); }
+.tone-neg .pchart-line { stroke: var(--neg); }
+.tone-pos .pchart-dot { fill: var(--pos); }
+.tone-neg .pchart-dot { fill: var(--neg); }
+.pchart-ranges { display: flex; gap: 4px; padding: 6px 0 4px; border-top: 1px solid var(--border); margin-top: 6px; }
+.pchart-ranges button { background: none; border: none; border-radius: 4px; padding: 3px 10px; font-weight: 700; font-size: 12px; cursor: pointer; color: var(--muted); }
+.pchart-ranges button:hover { color: var(--text); }
+.tone-pos .pchart-ranges button.on { background: color-mix(in srgb, var(--pos) 18%, transparent); color: var(--pos); }
+.tone-neg .pchart-ranges button.on { background: color-mix(in srgb, var(--neg) 18%, transparent); color: var(--neg); }
+.pstats { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px 14px; padding: 8px 12px; border-top: 1px solid var(--border); }
+.phint { padding: 0 12px 10px; }
 
 /* bottom tabs */
 .tabs { display: flex; gap: 2px; padding: 4px 6px 0; border-bottom: 1px solid var(--border); align-items: center; flex-wrap: wrap; }
