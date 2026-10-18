@@ -69,9 +69,21 @@ def run(
     ] = False,
     no_web: Annotated[bool, typer.Option("--no-web")] = False,
     no_discord: Annotated[bool, typer.Option("--no-discord")] = False,
+    preset: Annotated[
+        str | None,
+        typer.Option("--preset", help="Bankroll preset (hands-off): micro|small|starter|standard|large|pro"),
+    ] = None,
 ) -> None:
     """Run the full system: market data, scanner, LLM gate, auto-trader, web UI, Discord."""
     s = _settings(config, mode)
+    if preset is not None:
+        from kst.presets import apply_preset
+
+        try:
+            apply_preset(s, preset)
+        except ValueError as exc:
+            typer.secho(str(exc), fg="red", err=True)
+            raise typer.Exit(2) from exc
     if s.app.mode is Mode.LIVE and not i_understand_live_trading:
         typer.secho(
             "Live mode trades real money. Re-run with --i-understand-live-trading.", fg="red", err=True
@@ -96,6 +108,25 @@ def scan(config: ConfigOpt = None, no_discord: Annotated[bool, typer.Option("--n
         s.discord.enabled = False
     _banner(s, scan_only=True)
     _run(s, live_armed=False, scan_only=True)
+
+
+@cli.command()
+def presets() -> None:
+    """List bankroll presets (use with `kst run --preset KEY`, `preset:` in config, or the web UI)."""
+    from kst.presets import PRESETS
+
+    typer.echo(f"{'key':<10}{'bankroll':>10}{'order':>9}{'day loss':>10}{'drawdown':>10}{'mkts/day':>10}")
+    for p in PRESETS.values():
+        lim = p.limits()
+        typer.echo(
+            f"{p.key:<10}{p.bankroll_usd:>10,.0f}{lim['max_order_usd']:>9,.0f}"
+            f"{lim['daily_loss_limit_usd']:>10,.0f}{lim['max_drawdown_usd']:>10,.0f}{p.markets_per_day:>10}"
+        )
+        typer.echo(f"{'':<10}{p.summary}")
+    typer.echo(
+        "\nEvery preset is hands-off: autotrade on, breaker pauses resume the next trading day (a drawdown"
+        "\nKILL still needs you), and entries proceed on quant signals if the LLM is unreachable."
+    )
 
 
 @cli.command("llm-packet")
@@ -176,7 +207,8 @@ def check(config: ConfigOpt = None, mode: ModeOpt = None) -> None:
             problems += 1
             typer.secho("discord: allowed_user_ids is empty — nobody could use the controls", fg="red")
         typer.echo(
-            f"autotrade={s.engine.autotrade}  limits: {s.risk.limits.max_markets_per_day} markets/day, daily loss ${s.risk.limits.daily_loss_limit_usd}"
+            f"preset={s.preset or 'none'}  autotrade={s.engine.autotrade}  auto_resume={s.engine.auto_resume}  "
+            f"limits: {s.risk.limits.max_markets_per_day} markets/day, daily loss ${s.risk.limits.daily_loss_limit_usd}"
         )
         return problems
 
@@ -454,7 +486,8 @@ def calibrate_weather_command(
 def _banner(s: Settings, scan_only: bool = False) -> None:
     color = {"paper": "cyan", "demo": "yellow", "live": "red"}.get(s.app.mode.value, "white")
     typer.secho(
-        f"kst · mode={s.app.mode.value.upper()} · autotrade={'off (scan only)' if scan_only else s.engine.autotrade}",
+        f"kst · mode={s.app.mode.value.upper()} · autotrade={'off (scan only)' if scan_only else s.engine.autotrade}"
+        + (f" · preset={s.preset}" if s.preset else ""),
         fg=color,
         bold=True,
     )

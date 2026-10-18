@@ -322,6 +322,7 @@ class Application:
         )
         if scan_only:
             self.control.autotrade = False
+            self.control.scan_only = True
 
         # ---- strategies + trader
         st = s.strategies
@@ -427,6 +428,7 @@ class Application:
         self.state.restore(self.repo.kv_get(EngineStateStore.KEY))
         if self.state.get() is EngineState.KILLED:
             log.warning("engine_starts_killed", reason=self.state.reason)
+        self._restore_preset()
         override = self.repo.kv_get("risk_limits_override")
         if override:
             try:
@@ -442,6 +444,27 @@ class Application:
             seen = await self.repo.fill_ids()
             self.oms.restore_seen_fills(seen)
             self.portfolio.restore_seen_fills(seen)
+
+    def _restore_preset(self) -> None:
+        """A preset named in config/CLI wins; switching to a different one discards limit edits saved for the
+        old one (they were tuned to another bankroll). With no preset configured, re-apply the one last chosen
+        in the UI (its limits come back via the saved override)."""
+        from kst.presets import PRESETS, apply_preset
+
+        s = self.settings
+        saved = self.repo.kv_get("preset")
+        if s.preset:
+            if saved != s.preset:
+                self.repo.kv_set("risk_limits_override", {})
+                self.repo.kv_set("preset", s.preset)
+                log.info("preset_applied", preset=s.preset, previous=saved)
+        elif isinstance(saved, str) and saved in PRESETS:
+            apply_preset(s, saved, limits=False, paper_balance=False)
+            log.info("preset_restored", preset=saved)
+        else:
+            return
+        if not self.scan_only:
+            self.control.autotrade = s.engine.autotrade
 
     async def _sync_exchange(self, *, confirm: bool = True) -> None:
         started_ms = self.clock.now_ms()
@@ -589,6 +612,7 @@ class Application:
         while True:
             await asyncio.sleep(1.0)
             self.risk.on_portfolio(self.portfolio.summary())
+            await self.control.auto_resume_tick()
 
     async def _lag_loop(self) -> None:
         while True:

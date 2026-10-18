@@ -32,12 +32,16 @@ class EngineStateStore:
         self.state = EngineState.RUNNING
         self.reason = ""
         self.since_ms = clock.now_ms()
+        # Who made the last transition (auto-resume only undoes SYSTEM pauses).
+        self.actor: Actor | None = None
 
     def restore(self, saved: dict[str, Any] | None) -> None:
         if saved and saved.get("state") in EngineState._value2member_map_:
             self.state = EngineState(saved["state"])
             self.reason = saved.get("reason", "")
             self.since_ms = int(saved.get("since_ms", self.since_ms))
+            a = str(saved.get("actor") or "")
+            self.actor = Actor(a) if a in Actor._value2member_map_ else None
 
     def get(self) -> EngineState:
         return self.state
@@ -48,7 +52,7 @@ class EngineStateStore:
             return False
         if new not in _ALLOWED[old]:
             raise ValueError(f"illegal engine transition {old} → {new}")
-        self.state, self.reason, self.since_ms = new, reason, self.clock.now_ms()
+        self.state, self.reason, self.since_ms, self.actor = new, reason, self.clock.now_ms(), actor
         if self.persist:
             self.persist(
                 self.KEY,

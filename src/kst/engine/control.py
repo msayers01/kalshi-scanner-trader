@@ -10,7 +10,7 @@ from typing import Any
 
 from kst.config import Settings
 from kst.core.bus import EventBus
-from kst.core.clock import Clock
+from kst.core.clock import Clock, trading_day
 from kst.core.events import Alert, AutotradeChanged, RiskLimitsChanged
 from kst.core.fixedpoint import MICROS_PER_DOLLAR, PRICE_SCALE, Price, Qty, fmt_usd
 from kst.core.logging import get_logger
@@ -53,6 +53,7 @@ class ControlService:
         self.clock = clock
         self.repo = repo
         self.autotrade = settings.engine.autotrade
+        self.scan_only = False  # `kst scan`: never turn autotrade on (not even via a preset)
         self._lock = asyncio.Lock()
         risk.on_breach = self._on_breach
 
@@ -264,6 +265,65 @@ class ControlService:
         )
         return {"ok": True, "autotrade": on}
 
+    async def apply_preset(
+        self, key: str, actor: Actor, who: str = "", *, reset_paper: bool = False
+    ) -> dict[str, Any]:
+        """Switch to bankroll preset `key`: scaled risk limits (persisted + audited like any limit edit) and the
+        hands-off switches (autotrade, auto-resume, LLM fallback allow). `reset_paper` also resets the paper
+        account to the preset's bankroll — paper mode only, and only when flat with no live orders."""
+        from kst.core.types import Mode
+        from kst.presets import apply_preset, get_preset
+
+        p = get_preset(key)  # ValueError → 422
+        if reset_paper:
+            if self.settings.app.mode is not Mode.PAPER:
+                return {"ok": False, "reason": "Resetting the balance is only possible in paper mode"}
+            if any(pos.qty for pos in self.portfolio.positions.values()) or self.oms.live_orders():
+                return {"ok": False, "reason": "Close all positions and cancel open orders before resetting"}
+        res = await self.set_limits(p.limits(), actor, who=who)
+        apply_preset(self.settings, p.key, limits=False, paper_balance=False)
+        if reset_paper:
+            self.portfolio.reset_paper(p.bankroll_usd)
+            self.risk.reset_breaker()
+        if self.repo is not None:
+            self.repo.kv_set("preset", p.key)
+        autotrade = False
+        if not self.scan_only and self.state.get() is not EngineState.KILLED:
+            await self.set_autotrade(True, actor, who=who)
+            autotrade = True
+        self._audit(f"{actor.value}:{who}", "apply_preset", {"preset": p.key, "reset_paper": reset_paper})
+        self.bus.publish(
+            Alert(
+                self.clock.now_ms(),
+                "info",
+                f"Preset: {p.label} (${p.bankroll_usd:,.0f})",
+                f"by {actor.value}; limits scaled, autotrade {'on' if autotrade else 'unchanged'}, auto-resume on"
+                + ("; paper balance reset" if reset_paper else ""),
+            )
+        )
+        return {"ok": True, "preset": p.key, "autotrade": autotrade, "changed": res["changed"]}
+
+    async def auto_resume_tick(self) -> bool:
+        """engine.auto_resume: once a new trading day starts, resume a PAUSE that a breaker (SYSTEM) made on an
+        earlier day. Operator pauses and KILL are never undone automatically."""
+        st = self.state
+        if (
+            not self.settings.engine.auto_resume
+            or st.get() is not EngineState.PAUSED
+            or st.actor is not Actor.SYSTEM
+        ):
+            return False
+        tz = self.settings.app.trading_day_tz
+        if trading_day(st.since_ms, tz) >= trading_day(self.clock.now_ms(), tz):
+            return False
+        reason = st.reason
+        res = await self.resume(Actor.SYSTEM, who="auto_resume")
+        if res.get("ok"):
+            self.bus.publish(
+                Alert(self.clock.now_ms(), "info", "Auto-resumed", f"new trading day (was paused: {reason})")
+            )
+        return bool(res.get("ok"))
+
     async def set_limits(self, changes: dict[str, Any], actor: Actor, who: str = "") -> dict[str, Any]:
         new, diff = self.risk.limits.patch(changes)
         self.risk.limits = new
@@ -348,6 +408,8 @@ class ControlService:
             "state_reason": self.state.reason,
             "state_since_ms": self.state.since_ms,
             "autotrade": self.autotrade,
+            "preset": self.settings.preset,
+            "auto_resume": self.settings.engine.auto_resume,
             "live_armed": self.risk.live_armed,
             "equity": s.equity / 1e6,
             "cash": s.cash / 1e6,

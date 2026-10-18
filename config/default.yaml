@@ -1,8 +1,14 @@
 # kst default configuration. Copy keys you want to change into config/local.yaml (git-ignored).
 # Secrets NEVER go here — use .env (see .env.example). Full schema + comments: src/kst/config.py
 
+# Bankroll preset: micro ($100) | small ($500) | starter ($1k) | standard ($5k) | large ($25k) | pro ($100k).
+# Scales every risk limit to the starting cash and makes kst hands-off (autotrade on, breaker pauses resume
+# the next trading day, trades on quant signals if the LLM is down). `kst presets` lists them. Or pick one
+# in the web UI (Risk limits tab) / `kst run --preset standard`.
+preset: null
+
 app:
-  mode: paper                 # paper | demo | live   (live also needs --i-understand-live-trading)
+  mode: paper                # paper | demo | live   (live also needs --i-understand-live-trading)
   data_dir: data
   trading_day_tz: America/New_York
   log_level: INFO
@@ -89,6 +95,7 @@ risk:
 
 engine:
   autotrade: false            # start with scanner + manual trading; enable after reviewing paper P&L
+  auto_resume: false          # breaker PAUSE resumes at the next trading day (never after KILL)
   tick_s: 0.25
   equity_publish_ms: 250      # re-mark + publish equity this often when it changes (breakers, live chart)
 

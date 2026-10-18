@@ -3,6 +3,7 @@ import { api } from "../api";
 import { closePosition } from "../closePosition";
 import { cents, qty, time, usd } from "../format";
 import { useStore } from "../store";
+import { Presets } from "./Presets";
 import { Scorecard } from "./Scorecard";
 
 type Tab = "positions" | "orders" | "fills" | "risk" | "activity" | "llm" | "scorecard";
@@ -229,6 +230,7 @@ function RiskLimits() {
 
   return (
     <div>
+      <Presets />
       <div className="limits">
         {Object.entries(limits).map(([k, v]) => (
           <label key={k} className={draft[k] !== undefined && Number(draft[k]) !== v ? "dirty" : undefined}>

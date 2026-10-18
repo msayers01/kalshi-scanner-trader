@@ -25,6 +25,9 @@ interface State {
   scanQuery: ScanQuery;
   scanQueryError: string;
   setScanQuery: (q: ScanQuery) => void;
+  help: string | null; // open help section id ("" = top), null = closed
+  openHelp: (section?: string) => void;
+  closeHelp: () => void;
 }
 
 const QUERY_KEY = "kst.scanQuery";
@@ -89,6 +92,9 @@ export const useStore = create<State>((set, get) => ({
     }
     send({ op: "scan_query", query: c });
   },
+  help: null,
+  openHelp: (section = "") => set({ help: section }),
+  closeHelp: () => set({ help: null }),
 }));
 
 // ------------------------------------------------------------------ websocket

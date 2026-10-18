@@ -78,6 +78,22 @@ entry takes but never cancels resting quotes.
 | `reject_storm` (exchange rejects) | 10 in 60 s | PAUSE |
 | Critical task crash (market data, OMS, portfolio) | — | KILL |
 
+**Auto-resume** (`engine.auto_resume`, off by default, on with any bankroll preset): a PAUSE made by the
+system (any breaker above) is lifted at the start of the next trading day. Pauses made by an operator and
+every KILL are never undone automatically.
+
+## Bankroll presets (`kst/presets.py`)
+
+`preset:` in config, `kst run --preset KEY`, or the web UI's Risk limits tab. Every tier scales the limits
+by the same fractions of bankroll — 5 % per order and per market, 10 % per event, 25 % per category,
+50 % total exposure (and ≤ 50 % of equity), daily loss 5 % → PAUSE, drawdown 10 % → KILL — with
+hand-tuned entry throttles (markets/day, open positions). `starter` ($1,000) equals the defaults above.
+
+Presets are hands-off: autotrade on, auto-resume on, and `llm.fallback: allow` (entries proceed on the
+quant signal when the LLM is unreachable; with a reachable LLM the gate still decides). They never change
+the trading mode. At startup a configured preset wins; switching presets discards limit edits saved for the
+previous one; with none configured, the preset last applied in the UI is restored together with its edits.
+
 ## Exchange-side safety nets (live and demo)
 
 - Every resting order has `cancel_order_on_pause: true`, so exchange pauses

@@ -346,6 +346,9 @@ class EngineCfg(BaseModel):
     # Portfolio re-marks this often and publishes PortfolioUpdated when equity changed (plus a 1 s heartbeat).
     # Lower = faster drawdown/daily-loss breakers and a smoother live equity chart; each publish is cheap.
     equity_publish_ms: int = 250
+    # Hands-off: a breaker PAUSE (daily loss, losing streak, reject storm) resumes by itself at the next
+    # trading day. KILL (drawdown) never auto-resumes. Bankroll presets turn this on.
+    auto_resume: bool = False
     manage_manual_positions: bool = False  # let strategies exit positions they didn't open
     cancel_on_shutdown: bool = True  # live/demo: cancel strategy orders on a graceful shutdown
 
@@ -444,6 +447,10 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Bankroll preset (micro | small | starter | standard | large | pro, see kst/presets.py): scales every
+    # risk limit to the starting cash and makes the engine hands-off (autotrade, auto-resume, LLM fallback
+    # allow). Applied on top of the YAML; runtime edits in the UI still persist on top of it.
+    preset: str | None = None
     app: AppCfg = AppCfg()
     kalshi: KalshiCfg = KalshiCfg()
     universe: UniverseCfg = UniverseCfg()
@@ -513,4 +520,9 @@ def load_settings(*paths: Path | str, overrides: dict[str, Any] | None = None) -
             merged = _deep_merge(merged, data)
     if overrides:
         merged = _deep_merge(merged, overrides)
-    return Settings(**merged)
+    s = Settings(**merged)
+    if s.preset:
+        from kst.presets import apply_preset
+
+        apply_preset(s, s.preset)
+    return s

@@ -48,6 +48,10 @@ class LimitsBody(BaseModel):
     changes: dict[str, Any]
 
 
+class PresetBody(BaseModel):
+    reset_paper: bool = False
+
+
 class OrderBody(BaseModel):
     ticker: str
     side: Literal["yes", "no"]  # buy YES or buy NO
@@ -206,6 +210,12 @@ def create_app(app: Application) -> FastAPI:
             "rejections": app.risk.rejections,
         }
 
+    @api.get("/api/presets", dependencies=read)
+    def presets() -> dict[str, Any]:
+        from kst.presets import PRESETS
+
+        return {"active": app.settings.preset, "presets": [p.to_dict() for p in PRESETS.values()]}
+
     @api.get("/api/scorecard", dependencies=read)
     async def scorecard() -> dict[str, Any]:
         from kst.portfolio.scorecard import paper_scorecard
@@ -262,6 +272,14 @@ def create_app(app: Application) -> FastAPI:
     async def set_limits(body: LimitsBody, who: str = Depends(auth)) -> dict[str, Any]:
         try:
             return await app.control.set_limits(body.changes, Actor.WEB, who=who)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @api.post("/api/presets/{key}/apply")
+    async def apply_preset(key: str, body: PresetBody, who: str = Depends(auth)) -> dict[str, Any]:
+        """Switch to a bankroll preset: scaled risk limits + hands-off switches (see kst/presets.py)."""
+        try:
+            return await app.control.apply_preset(key, Actor.WEB, who=who, reset_paper=body.reset_paper)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
