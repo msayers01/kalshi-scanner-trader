@@ -18,6 +18,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from kst.api import serialize as ser
 from kst.core.events import (
     Alert,
+    AutotradeChanged,
     BookUpdated,
     EngineStateChanged,
     FillReceived,
@@ -70,6 +71,7 @@ class WsHub:
         bus.subscribe(PositionChanged, lambda _: self._dirty.add("positions"))
         bus.subscribe(OrderUpdated, lambda _: self._dirty.add("orders"))
         bus.subscribe(EngineStateChanged, lambda _: self._dirty.add("status"))
+        bus.subscribe(AutotradeChanged, lambda _: self._dirty.add("status"))
         bus.subscribe(RiskLimitsChanged, lambda _: self._dirty.update({"limits", "status"}))
         bus.subscribe(LLMVerdictsUpdated, lambda _: self._dirty.add("llm"))
         bus.subscribe(BookUpdated, lambda e: self._dirty_books.add(e.ticker))

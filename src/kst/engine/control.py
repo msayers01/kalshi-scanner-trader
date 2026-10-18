@@ -11,7 +11,7 @@ from typing import Any
 from kst.config import Settings
 from kst.core.bus import EventBus
 from kst.core.clock import Clock
-from kst.core.events import Alert, RiskLimitsChanged
+from kst.core.events import Alert, AutotradeChanged, RiskLimitsChanged
 from kst.core.fixedpoint import MICROS_PER_DOLLAR, PRICE_SCALE, Price, Qty, fmt_usd
 from kst.core.logging import get_logger
 from kst.core.types import Actor, BookSide, EngineState, OrderStatus, TimeInForce
@@ -227,6 +227,7 @@ class ControlService:
         if not on:
             n = await self.oms.cancel_where(lambda o: o.strategy not in ("manual", "flatten"))
         self._audit(f"{actor.value}:{who}", "autotrade", {"on": on, "cancelled": n})
+        self.bus.publish(AutotradeChanged(self.clock.now_ms(), on, actor))
         self.bus.publish(
             Alert(self.clock.now_ms(), "info", f"Autotrade {'ON' if on else 'OFF'}", f"by {actor.value}")
         )
