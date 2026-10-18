@@ -139,6 +139,12 @@ class EngineStateChanged(Event):
 
 
 @dataclass(frozen=True, slots=True)
+class AutotradeChanged(Event):
+    on: bool
+    actor: Actor
+
+
+@dataclass(frozen=True, slots=True)
 class RiskLimitsChanged(Event):
     changes: dict[str, Any]
     actor: Actor

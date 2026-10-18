@@ -44,6 +44,17 @@ async def test_status_and_controls(tmp_path: Path) -> None:
         assert (await c.get("/api/health")).status_code == 200
 
 
+async def test_autotrade_toggle_pushes_status_to_ui(tmp_path: Path) -> None:
+    # The UI checkbox mirrors pushed status, so a toggle that doesn't mark "status" dirty looks stuck.
+    app = _app(tmp_path)
+    async with _client(app) as c:
+        for on in (True, False):
+            app.hub._dirty.clear()
+            assert (await c.post("/api/control/autotrade", json={"on": on})).json()["autotrade"] is on
+            assert "status" in app.hub._dirty
+            assert app.hub.builders()["status"]()["autotrade"] is on
+
+
 async def test_limits_validation(tmp_path: Path) -> None:
     app = _app(tmp_path)
     async with _client(app) as c:
