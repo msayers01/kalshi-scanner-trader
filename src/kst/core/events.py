@@ -119,6 +119,7 @@ class MarketSettled(Event):
     result: str
     qty: int  # signed position at settlement
     pnl_micros: int
+    settlement_price: int | None = None  # YES payout, including scalar settlements
 
 
 @dataclass(frozen=True, slots=True)

@@ -139,6 +139,7 @@ class StationCfg(BaseModel):
     nws_station: str  # e.g. KNYC — observations for intraday max conditioning
     tz: str  # local timezone (climate day is local *standard* time)
     bias_f: float | None = None  # overrides pricing.weather.bias_f
+    spread_inflation: float | None = Field(default=None, gt=0)  # fitted station ensemble spread override
 
 
 class WeatherFeedCfg(BaseModel):
@@ -211,7 +212,34 @@ class WeatherPricingCfg(BaseModel):
 
 
 class CalibrationCfg(BaseModel):
-    path: Path = Path("data/calibration.json")  # written by `kst calibrate` (roadmap); identity if missing
+    path: Path = Path("data/calibration.json")  # reviewed `kst calibrate` candidate; identity if missing
+
+
+class CalibrationToolsCfg(BaseModel):
+    model_config = {"allow_inf_nan": False}
+    horizon_h: float = Field(default=1, gt=0)  # price snapshot horizon before close
+    max_quote_age_s: float = Field(default=300, gt=0)  # reject candles too far before the target horizon
+    max_spread: float = Field(default=0.20, gt=0, lt=1)  # exclude illiquid historical quote snapshots
+    holdout_fraction: float = Field(default=0.2, gt=0, lt=0.5)  # newest events/dates reserved for validation
+    min_train_samples: int = Field(default=200, ge=10)  # prevent unstable two-parameter market fits
+    min_holdout_samples: int = Field(default=50, ge=5)
+    min_train_events: int = Field(default=20, ge=3)  # related strikes stay in the same split
+    min_holdout_events: int = Field(default=10, ge=2)
+    l2: float = Field(default=0.01, gt=0)  # shrink toward the identity prior
+    max_markets: int = Field(default=1000, ge=1, le=10000)  # bounded public history acquisition
+    weather_min_train_days: int = Field(default=60, ge=10)
+    weather_min_holdout_days: int = Field(default=20, ge=5)
+    weather_min_members: int = Field(default=10, ge=2)  # complete members required for daily-high fit
+    weather_max_lead_h: float = Field(default=24, gt=0)  # use forecasts available before the climate day
+    weather_max_bias_f: float = Field(default=10, gt=0)  # bounded fit to expose station/source errors
+    weather_min_inflation: float = Field(default=0.25, gt=0)
+    weather_max_inflation: float = Field(default=5, gt=0)
+
+    @model_validator(mode="after")
+    def inflation_bounds(self) -> CalibrationToolsCfg:
+        if self.weather_min_inflation >= self.weather_max_inflation:
+            raise ValueError("weather_min_inflation must be below weather_max_inflation")
+        return self
 
 
 class PricingCfg(BaseModel):
@@ -389,6 +417,11 @@ class FeesCfg(BaseModel):
     rounding_allowance: float = 0.0001  # $ per fill added to EV-cost (balance-precision rounding)
 
 
+class ReplayCfg(BaseModel):
+    warmup_s: float = Field(default=0, ge=0)  # ingest inputs without orders before evaluating strategies
+    equity_sample_s: float = Field(default=60, gt=0)  # fixed return interval for replay Sharpe estimates
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="KST_",
@@ -413,6 +446,8 @@ class Settings(BaseSettings):
     web: WebCfg = WebCfg()
     paper: PaperCfg = PaperCfg()
     fees: FeesCfg = FeesCfg()
+    replay: ReplayCfg = ReplayCfg()
+    calibration_tools: CalibrationToolsCfg = CalibrationToolsCfg()
 
     @classmethod
     def settings_customise_sources(

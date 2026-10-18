@@ -1,7 +1,7 @@
 """Broker port. Implementations: PaperBroker (simulated), LiveBroker (Kalshi demo/prod).
 
-Brokers report asynchronous results through the BrokerListener bound by the OMS. `place` must leave
-the order with an exchange id (or REJECTED) and apply any immediate fills via the listener.
+Brokers report asynchronous results through the BrokerListener bound by the OMS. An ambiguous create
+must raise OrderSubmissionUnknownError so the OMS retains exposure until exchange reconciliation.
 """
 
 from __future__ import annotations
@@ -12,6 +12,10 @@ from typing import Any, Protocol
 from kst.core.fixedpoint import Price, Qty
 from kst.core.types import OrderStatus
 from kst.domain.orders import Fill, Order
+
+
+class OrderSubmissionUnknownError(RuntimeError):
+    """The exchange may have accepted a create; never release risk or automatically replace it."""
 
 
 class BrokerListener(Protocol):

@@ -15,7 +15,7 @@ import uvicorn
 from kst.config import Settings
 from kst.core.bus import EventBus
 from kst.core.clock import Clock, SystemClock
-from kst.core.events import DailyReport, FeedHealth
+from kst.core.events import CatalogRefreshed, DailyReport, FeedHealth, MarketStatusChanged
 from kst.core.logging import get_logger
 from kst.core.supervisor import Supervisor
 from kst.core.types import Actor, EngineState, Mode
@@ -38,6 +38,7 @@ from kst.llm.packet import Candidate
 from kst.llm.providers import build_provider
 from kst.marketdata.catalog import MarketCatalog
 from kst.marketdata.recorder import Recorder
+from kst.marketdata.recording_state import catalog_snapshot
 from kst.marketdata.service import MarketDataService
 from kst.persistence.db import Database
 from kst.persistence.repo import Repository
@@ -134,6 +135,15 @@ class Application:
             self.bus,
             self.clock,
         )
+        if self.recorder is not None:
+            recorder = self.recorder
+            self.bus.subscribe(
+                CatalogRefreshed, lambda e: recorder.catalog(e.ts_ms, catalog_snapshot(self.catalog))
+            )
+            self.bus.subscribe(
+                MarketStatusChanged,
+                lambda e: recorder.status(e.ts_ms, e.ticker, e.status.value, e.result, e.settlement_value),
+            )
         self.md = MarketDataService(
             s.marketdata,
             self.catalog,
@@ -147,7 +157,11 @@ class Application:
         if use_ws:
             assert self.signer is not None
             self.ws: KalshiWs | None = KalshiWs(
-                k.ws_url, self.signer, self.md.ws_handlers(), on_state=self.md.on_ws_state
+                k.ws_url,
+                self.signer,
+                self.md.ws_handlers(),
+                on_state=self.md.on_ws_state,
+                on_gap=self.md.on_ws_gap,
             )
             self.md.ws, self.md.mode = self.ws, "ws"
             self.ws.want_channel("ticker")
@@ -171,7 +185,7 @@ class Application:
         self.crypto_feed.attach()
         self.weather_store = WeatherStore()
         self.weather_feed = WeatherFeed(
-            s.feeds.weather, self.weather_store, self.catalog, self.bus, self.clock
+            s.feeds.weather, self.weather_store, self.catalog, self.bus, self.clock, recorder=self.recorder
         )
         wp = s.pricing.weather
         models: list[Any] = []
@@ -201,6 +215,11 @@ class Application:
                     min_bandwidth_f=wp.min_bandwidth_f,
                     model_floor=wp.model_floor,
                     max_forecast_age_s=wp.max_forecast_age_s,
+                    station_inflation={
+                        k_: v.spread_inflation
+                        for k_, v in s.feeds.weather.stations.items()
+                        if v.spread_inflation is not None
+                    },
                 )
             )
         self.calibration = CalibrationSet.load(s.pricing.calibration.path)
@@ -318,6 +337,9 @@ class Application:
             self.clock,
         )
         self.supervisor = Supervisor(on_critical_failure=self.control.on_critical_task_failure)
+        from kst.portfolio.scorecard import ScorecardRecorder
+
+        self.scorecard = ScorecardRecorder(self)
         from kst.api.hub import WsHub
 
         self.hub = WsHub(self, push_hz=s.web.push_hz)
@@ -347,7 +369,7 @@ class Application:
                 "age_s": round((self.clock.now_ms() - self.scanner.latest.ts_ms) / 1000, 1),
             },
             "llm": self.gate.status(),
-            "db": {"written": self.repo.written, "errors": self.repo.errors},
+            "db": self.repo.health(),
             "tasks": self.supervisor.health(),
             "risk_rejections": self.risk.rejections,
             "authenticated": self.signer is not None,
@@ -388,6 +410,7 @@ class Application:
 
     async def _restore(self) -> None:
         await self.repo.start()
+        await self.scorecard.restore()
         self.state.restore(self.repo.kv_get(EngineStateStore.KEY))
         if self.state.get() is EngineState.KILLED:
             log.warning("engine_starts_killed", reason=self.state.reason)
@@ -403,6 +426,9 @@ class Application:
         self.gate.restore(self.repo.kv_get("llm_budget"))
         if self.mode in (Mode.PAPER, Mode.REPLAY) and (saved := self.repo.kv_get("portfolio")):
             self.portfolio.restore(saved)
+            seen = await self.repo.fill_ids()
+            self.oms.restore_seen_fills(seen)
+            self.portfolio.restore_seen_fills(seen)
 
     async def _sync_exchange(self) -> None:
         snap = await self.broker.snapshot()
@@ -438,7 +464,7 @@ class Application:
         if s.feeds.crypto.enabled:
             await self.crypto_feed.seed_vol()
         sup = self.supervisor
-        sup.add("db_writer", self.repo.run)
+        sup.add("db_writer", self.repo.run, critical=True)
         sup.add("catalog", self._catalog_loop)
         if self.ws is not None:
             sup.add("kalshi_ws", self.md.run_ws, critical=True)
@@ -482,11 +508,13 @@ class Application:
         report = self.portfolio.daily_report()
         with contextlib.suppress(Exception):
             write_ledger(self.settings.data_dir / "pnl", report)
-        await self.supervisor.stop()
-        if self.recorder:
-            self.recorder.close()
-        await self.repo.stop()
-        await self.rest.aclose()
+        async with contextlib.AsyncExitStack() as cleanup:
+            cleanup.push_async_callback(self.rest.aclose)
+            cleanup.push_async_callback(self.repo.stop)
+            if self.recorder:
+                cleanup.callback(self.recorder.close)
+            cleanup.push_async_callback(self.broker.stop)
+            await self.supervisor.stop()
         log.info("kst_stopped")
 
     # ------------------------------------------------------------------ background loops
@@ -612,8 +640,8 @@ class Application:
 
 
 async def run_application(app: Application, stop: asyncio.Event) -> None:
-    await app.start()
     try:
+        await app.start()
         await stop.wait()
     finally:
         await app.stop()

@@ -29,7 +29,7 @@ uv run kst check                  # validate config, keys, connectivity
 uv run kst scan                   # scanner only (web UI + Discord, no auto orders)
 uv run kst run                    # full system (paper mode by default)
 uv run kst llm-packet --top 20    # print an LLM decision packet
-uv run pytest -q                  # tests (no network; ~5 s)
+uv run pytest -q                  # tests (mock HTTP + local WS only; no exchange traffic)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy src
 cd web && npm ci && npm run build # UI → web/dist (served by the backend at /)
@@ -88,7 +88,8 @@ src/kst/engine/       trader (AutoTrader loop), control (ControlService), state 
 src/kst/persistence/  db, tables, repo (write-behind)
 src/kst/api/          app (routes + auth + static UI), hub (WS push), serialize
 src/kst/discord_bot/  bot (slash commands, ControlPanel view, notifier), formatting (embeds)
-src/kst/backtest/     empty: replay/backtester is roadmap
+src/kst/backtest/     offline replay driver, recording reader, metrics and parameter grids (docs/REPLAY.md)
+src/kst/calibration/  candidate probability/weather fits, collection, holdouts and plots (docs/CALIBRATION.md)
 src/kst/app.py        composition root: read this to see how everything is wired
 web/src/              React UI: store.ts (Zustand, WS-driven), api.ts (REST + token), components/
 tests/                conftest.py `Harness` = fully wired paper engine with no network; use it for engine tests

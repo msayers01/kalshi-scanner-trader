@@ -48,6 +48,10 @@ over WebSocket, and crypto is priced off the actual CF Benchmarks settlement ind
 | `kst llm-packet --top 20` | Print a compact decision packet to paste into ChatGPT/Claude |
 | `kst status` / `kst pause` / `kst resume` / `kst kill [--flatten]` | Control a running instance |
 | `kst report --days 14` | Daily P&L history |
+| `kst scorecard` | Lifetime paper execution scorecard as JSON (also in the UI Scorecard tab) |
+| `kst replay "data/recordings/*.jsonl.gz" --sensitivity` | Offline replay, reports and maker-fill sensitivity |
+| `kst calibrate --input data/market-samples.jsonl` | Candidate market-probability fit, holdout metrics and reliability plots |
+| `kst calibrate-weather --input data/weather-samples.jsonl` | Candidate station bias/spread fit and validation plots |
 
 ## Documentation
 
@@ -59,3 +63,7 @@ over WebSocket, and crypto is priced off the actual CF Benchmarks settlement ind
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md): setup (Kalshi keys, Discord bot, Ollama), going live, operations.
 - [`docs/KALSHI_API_NOTES.md`](docs/KALSHI_API_NOTES.md): verified API facts (fixed-point, V2 orders, WS, fees, limits).
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): what's next.
+- [`docs/REPLAY.md`](docs/REPLAY.md): offline backtesting, recording coverage, sweeps and report definitions.
+- [`docs/CALIBRATION.md`](docs/CALIBRATION.md): probability/weather fits, input formats and candidate review.
+- [`docs/EXECUTION_VALIDATION.md`](docs/EXECUTION_VALIDATION.md): automated execution tests, failure handling and pending demo acceptance checks.
+- [`docs/RELIABILITY.md`](docs/RELIABILITY.md): durable kill checkpoints, paper restart recovery, persistence health and failure tests.

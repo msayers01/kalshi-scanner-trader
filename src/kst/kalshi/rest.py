@@ -228,6 +228,24 @@ class KalshiRest:
         )
         return data.get("candlesticks") or []
 
+    def historical_markets(self, **params: Any) -> AsyncIterator[dict[str, Any]]:
+        """Archived markets; series/event/ticker filters are mutually exclusive in this API."""
+        return self.paginate("/historical/markets", "markets", {"limit": 500, **params})
+
+    async def historical_candlesticks(
+        self, ticker: str, start_ts: int, end_ts: int, period_interval: int = 1
+    ) -> list[dict[str, Any]]:
+        data = await self.request(
+            "GET",
+            f"/historical/markets/{ticker}/candlesticks",
+            params={
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+                "period_interval": period_interval,
+            },
+        )
+        return data.get("candlesticks") or []
+
     # ------------------------------------------------------------------ portfolio (auth)
 
     async def balance(self) -> dict[str, Any]:

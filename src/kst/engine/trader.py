@@ -196,7 +196,7 @@ class AutoTrader:
                 if len(candidates) >= self.max_candidates:
                     break
         todo = []
-        for t in dict.fromkeys([*managed, *candidates]):
+        for t in dict.fromkeys([*sorted(managed), *candidates]):
             if t in self._dirty or now - self._last_eval.get(t, 0) >= self.refresh_ms:
                 todo.append(t)
         self._dirty.difference_update(todo)

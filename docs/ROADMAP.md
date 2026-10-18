@@ -23,19 +23,21 @@ current.
 
 **Not done in v0.1 (do not assume these exist):**
 
-- No replay or backtester. `src/kst/backtest/` is an empty package, and there is no `kst replay` command. The recorder writes the input files.
-- No `kst calibrate`. The favorite-longshot fit function exists (`pricing/calibration.py::fit_logistic_calibration`), but nothing fetches history or writes `data/calibration.json`. The prior stays at identity, which means no trades from it.
+- Calibration commands produce reviewable candidates; the prior remains identity until a reviewed file is selected.
 - No Alembic. Tables are created at startup.
-- No fake-server test for the WS client. The LiveBroker has only been exercised against unit tests, not the demo exchange.
+- LiveBroker now has intercepted-REST integration tests and real loopback WebSocket tests; a demo-exchange acceptance run is still pending (`docs/EXECUTION_VALIDATION.md`).
 - Residual legs of partially filled arb baskets are not completed automatically.
 
 ## v0.2: validate edge before going live
 
-- [ ] `kst calibrate`: fit the favorite-longshot calibration from `/historical/markets` + candlesticks; per-category fits; reliability diagrams
-- [ ] `kst calibrate-weather`: fit per-station bias and spread inflation from past CLI reports versus archived ensembles
-- [ ] **Replay backtester** (`kst replay`): drive `MarketDataService` from `data/recordings/*.jsonl.gz` with `ManualClock` + `PaperBroker`. Report P&L, Sharpe, hit rate, and fill-model sensitivity, and sweep `s_p_base`, `z`, Kelly `λ`, and `implied_weight`
-- [ ] Paper-trading scorecard per strategy (expected vs realized edge at settlement, slippage, fill ratio, adverse selection). First live paper runs were slightly negative after spread and fees, so measure before tuning
+- [x] `kst calibrate`: bounded historical/recent markets + pre-horizon candlesticks or offline samples; global/per-category fits, event-grouped purged holdout, reliability diagrams and candidate files (`docs/CALIBRATION.md`)
+- [x] `kst calibrate-weather`: source-labeled final station reports paired with recorded pre-day ensembles or prepared samples; station bias/spread fits, chronological holdout and candidate YAML (`docs/CALIBRATION.md`)
+- [x] **Replay backtester** (`kst replay`): offline `MarketDataService` + `ManualClock` + `PaperBroker`, P&L/Sharpe/hit rate reports, maker queue sensitivity, and grids over `s_p_base`, `z`, Kelly `λ`, and `implied_weight`. Recorder now captures point-in-time metadata, fees, weather, volatility seeds and settlements. See `docs/REPLAY.md` for coverage and limitations.
+- [x] Paper-trading scorecard per strategy (expected vs realized net at settlement, decision-mid slippage, order fill rate, 60s markout). Available in the UI Scorecard tab and `kst scorecard`; see `docs/SCORECARD.md`. First live paper runs were slightly negative after spread and fees, so measure before tuning
 - [ ] Demo-exchange run of the LiveBroker: orders, amends, IOC finalization, fills over WS, cancel-all, order group
+- [x] Automated execution validation: OMS/risk + signed REST, real local WS, failure/race cases, fill deduplication, IOC, TTL, kill and group startup checks (`docs/EXECUTION_VALIDATION.md`)
+- [x] Local reliability: serialized/cancellation-safe DB batches, durable kill intent, immediate critical-worker escalation, paper fill IDs/dedup across committed checkpoints, persistence health and lifecycle cleanup (`docs/RELIABILITY.md`)
+- [ ] Durable fill/checkpoint reconciliation across restarts and eventually consistent balance/position snapshots; unknown-create history recovery
 - [ ] Residual-leg completion for partially filled arb baskets
 - [ ] Alembic baseline + migration for every schema change
 

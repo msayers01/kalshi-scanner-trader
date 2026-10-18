@@ -147,11 +147,13 @@ class WeatherEnsembleModel:
         model_floor: float = 0.02,
         max_forecast_age_s: float = 4 * 3600.0,
         obs_required_after_s: float = 2 * 3600.0,
+        station_inflation: dict[str, float] | None = None,
     ) -> None:
         self.store = store
         self.stations = stations
         self.bias_f = bias_f
         self.inflation = spread_inflation
+        self.station_inflation = station_inflation or {}
         self.h_min = min_bandwidth_f
         self.model_floor = model_floor
         self.max_age_ms = int(max_forecast_age_s * 1000)
@@ -181,7 +183,12 @@ class WeatherEnsembleModel:
                 return None
             # No forecast hours left: the observed max (almost) is the answer.
             rem = np.array([m_obs - bias])
-        cdf = KernelCDF(rem, bias=bias, inflation=self.inflation, h_min=self.h_min)
+        cdf = KernelCDF(
+            rem,
+            bias=bias,
+            inflation=self.station_inflation.get(market.series_ticker, self.inflation),
+            h_min=self.h_min,
+        )
         p = strike_probability_int(cdf, market.strike_type, market.floor_strike, market.cap_strike, m_obs)
         if p is None:
             return None

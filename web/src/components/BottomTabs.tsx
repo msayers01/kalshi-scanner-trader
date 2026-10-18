@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { cents, qty, time, usd } from "../format";
 import { useStore } from "../store";
+import { Scorecard } from "./Scorecard";
 
-type Tab = "positions" | "orders" | "fills" | "risk" | "activity" | "llm";
+type Tab = "positions" | "orders" | "fills" | "risk" | "activity" | "llm" | "scorecard";
 
 export function BottomTabs() {
   const [tab, setTab] = useState<Tab>("positions");
@@ -13,6 +14,7 @@ export function BottomTabs() {
     ["positions", `Positions (${npos})`],
     ["orders", `Orders (${nord})`],
     ["fills", "Fills"],
+    ["scorecard", "Scorecard"],
     ["risk", "Risk limits"],
     ["activity", "Activity"],
     ["llm", "LLM"],
@@ -32,6 +34,7 @@ export function BottomTabs() {
         {tab === "positions" && <Positions />}
         {tab === "orders" && <Orders />}
         {tab === "fills" && <Fills />}
+        {tab === "scorecard" && <Scorecard />}
         {tab === "risk" && <RiskLimits />}
         {tab === "activity" && <Activity />}
         {tab === "llm" && <Llm />}

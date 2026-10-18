@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import numpy as np
+import orjson
 
 from kst.config import WeatherFeedCfg
 from kst.core.bus import EventBus
@@ -18,6 +19,7 @@ from kst.core.clock import Clock, ms_to_dt
 from kst.core.events import FeedHealth
 from kst.core.logging import get_logger
 from kst.marketdata.catalog import MarketCatalog
+from kst.marketdata.recorder import Recorder
 from kst.pricing.weather import EnsembleForecast, Observation, WeatherStore, climate_day_window_ms
 
 log = get_logger(__name__)
@@ -47,12 +49,14 @@ class WeatherFeed:
         bus: EventBus,
         clock: Clock,
         http: httpx.AsyncClient | None = None,
+        recorder: Recorder | None = None,
     ) -> None:
         self.cfg = cfg
         self.store = store
         self.catalog = catalog
         self.bus = bus
         self.clock = clock
+        self.recorder = recorder
         self.http = http or httpx.AsyncClient(timeout=20.0, headers={"User-Agent": cfg.user_agent})
 
     def _active_series(self) -> list[str]:
@@ -78,6 +82,20 @@ class WeatherFeed:
         fc = parse_open_meteo(r.json(), self.clock.now_ms())
         if fc is not None:
             self.store.forecasts[series] = fc
+            if self.recorder:
+                # orjson normalizes missing ensemble values (NaN) to JSON null.
+                members = orjson.loads(orjson.dumps(fc.members_f, option=orjson.OPT_SERIALIZE_NUMPY))
+                self.recorder.weather(
+                    self.clock.now_ms(),
+                    {
+                        "series": series,
+                        "forecast": {
+                            "issued_ms": fc.issued_ms,
+                            "times_ms": fc.times_ms.tolist(),
+                            "members_f": members,
+                        },
+                    },
+                )
             log.info(
                 "weather_forecast", series=series, members=fc.members_f.shape[0], hours=fc.members_f.shape[1]
             )
@@ -103,6 +121,18 @@ class WeatherFeed:
         if temps_c:
             max_f = max(temps_c) * 9.0 / 5.0 + 32.0
             self.store.observations[series] = Observation(today, round(max_f, 1), now)
+            if self.recorder:
+                self.recorder.weather(
+                    self.clock.now_ms(),
+                    {
+                        "series": series,
+                        "observation": {
+                            "day": today.isoformat(),
+                            "max_f": round(max_f, 1),
+                            "ts_ms": now,
+                        },
+                    },
+                )
 
     async def run(self) -> None:
         last_fc: dict[str, int] = {}

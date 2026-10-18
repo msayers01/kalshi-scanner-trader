@@ -336,7 +336,9 @@ model-error floor.
 
 **Known risks.** Settlement-source revisions, station outages, and the rules
 now citing "The Weather Company" (verify the station per market). Bias `b_s`
-should be fitted per station from history (roadmap: `kst calibrate-weather`).
+can be fitted per station with `kst calibrate-weather`; a station-specific spread override
+is also supported. It minimizes rounded-daily-high kernel-mixture log loss using the same
+bandwidth and Fahrenheit bin boundaries as the production model. See `docs/CALIBRATION.md`.
 
 ---
 
@@ -429,7 +431,10 @@ The fit is a logistic regression of settlement outcomes on `logit(price at
 horizon h before close)`, from historical settled markets
 (`pricing.calibration.fit_logistic_calibration`). The fit covariance gives
 `σ_model` by the delta method. Fits are stored in `data/calibration.json`, per
-category if there is enough data.
+category if there is enough data. `kst calibrate` now produces reviewable candidates using
+penalized likelihood, a final-parameter Hessian, and event-cluster sandwich covariance. Whole
+events are held out chronologically and unavailable training labels are purged. Runtime
+prediction respects the fitted horizon and availability timestamp (`docs/CALIBRATION.md`).
 
 **The defaults are the identity (α = 0, β = 1), which gives no edge.** The
 prior generates trades only after you run a fit and review it. Used with
@@ -458,3 +463,12 @@ gate is on and the market is in `llm.scope` (`docs/LLM_GATE.md`).
 
 The router never trades a market its strategy cannot price. "No model, no
 trade" is the default.
+
+## 9. Replay evaluation
+
+`kst replay` evaluates the same formulas and pre-trade risk checks against recorded inputs.
+See `docs/REPLAY.md` for return/Sharpe definitions, fee accounting, queue sensitivity and coverage.
+Public trades and through-books older than a resting order's creation cannot fill that order;
+receipt time controls when decisions can see a recorded event. LLM gating and fitted calibration
+are disabled for the offline quantitative comparison. Results depend on the recorded universe,
+model inputs and the paper fill assumptions, and include marked open positions at the endpoint.

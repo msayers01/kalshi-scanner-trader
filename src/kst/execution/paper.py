@@ -8,6 +8,7 @@ moves through our resting price fills us (the aggressor would have hit us first)
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -77,7 +78,7 @@ class PaperBroker:
     def _fill(self, order: Order, price: int, qty: int, taker: bool) -> None:
         fee = self._fee(order, price, qty, taker)
         f = Fill(
-            fill_id=f"pf-{next(self._ids)}",
+            fill_id=hashlib.sha256(f"paper:{order.client_order_id}:{next(self._ids)}".encode()).hexdigest(),
             client_order_id=order.client_order_id,
             exchange_order_id=order.exchange_order_id or "",
             ticker=order.ticker,
@@ -214,7 +215,7 @@ class PaperBroker:
         remaining_print = e.qty
         for coid, r in list(self._resting.items()):
             o = r.order
-            if o.ticker != e.ticker or o.remaining <= 0 or remaining_print <= 0:
+            if o.ticker != e.ticker or o.remaining <= 0 or remaining_print <= 0 or o.created_ms > e.ts_ms:
                 continue
             # A resting BID is hit by taker sells (taker_side ASK) at prices ≤ our bid; ASK by taker buys ≥ our ask.
             if o.side is BookSide.BID and not (e.taker_side is BookSide.ASK and e.price <= o.price):
@@ -244,7 +245,7 @@ class PaperBroker:
             return
         for coid, r in list(self._resting.items()):
             o = r.order
-            if o.ticker != e.ticker or o.remaining <= 0:
+            if o.ticker != e.ticker or o.remaining <= 0 or o.created_ms > book.ts_ms:
                 continue
             r.queue_ahead = min(r.queue_ahead, self._visible_at(o, o.price))
             # Book traded through our resting price → we would have been filled first.

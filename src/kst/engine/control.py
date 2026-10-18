@@ -75,6 +75,8 @@ class ControlService:
 
     async def resume(self, actor: Actor, who: str = "") -> dict[str, Any]:
         async with self._lock:
+            if self.repo is not None and not self.repo.health()["healthy"]:
+                return {"ok": False, "reason": "Persistence is unhealthy; repair it before resuming"}
             changed = self.state.set(EngineState.RUNNING, actor, "resumed")
         self._audit(f"{actor.value}:{who}", "resume")
         return {"ok": True, "changed": changed, "state": self.state.get().value}
@@ -85,7 +87,28 @@ class ControlService:
         async with self._lock:
             self.state.set(EngineState.KILLED, actor, reason or "kill switch")
             self.autotrade = False
-            n = await self.oms.cancel_all()
+            self._audit(f"{actor.value}:{who}", "kill_intent", {"reason": reason, "flatten": flatten})
+            persisted = True
+            if self.repo is not None:
+                try:
+                    await self.repo.flush()  # acknowledge a durable kill before awaiting exchange writes
+                except Exception:
+                    persisted = False
+                    log.exception("kill_checkpoint_failed")
+                    self.bus.publish(
+                        Alert(
+                            self.clock.now_ms(),
+                            "critical",
+                            "Kill state could not be saved",
+                            "Trading is stopped; exchange cancellation will still be attempted. Repair persistence before restart.",
+                        )
+                    )
+            try:
+                n = await self.oms.cancel_all()
+            except Exception as exc:
+                self._audit(f"{actor.value}:{who}", "kill_cancel_failed", {"error": str(exc)})
+                self.bus.publish(Alert(self.clock.now_ms(), "critical", "Kill cancellation failed", str(exc)))
+                raise
         self.bus.publish(
             Alert(
                 self.clock.now_ms(),
@@ -95,7 +118,12 @@ class ControlService:
             )
         )
         self._audit(f"{actor.value}:{who}", "kill", {"reason": reason, "flatten": flatten, "cancelled": n})
-        out: dict[str, Any] = {"ok": True, "state": self.state.get().value, "cancelled": n}
+        out: dict[str, Any] = {
+            "ok": persisted,
+            "state": self.state.get().value,
+            "cancelled": n,
+            "persisted": persisted,
+        }
         if flatten:
             out["flatten"] = await self.flatten(actor, who=who)
         return out
