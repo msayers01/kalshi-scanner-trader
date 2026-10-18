@@ -131,12 +131,14 @@ class WsHub:
                 op = msg.get("op")
                 if op == "sub_book":
                     c.book = str(msg.get("ticker") or "") or None
+                    self._refresh_live_focus()
                     if c.book:
                         self.app.md.add_focus("ui", {c.book})
                         b = ser.book(self.app, c.book)
                         c.offer(orjson.dumps({"type": "book", "data": b}))
                 elif op == "unsub_book":
                     c.book = None
+                    self._refresh_live_focus()
                 elif op == "ping":
                     c.offer(orjson.dumps({"type": "pong", "data": {"ts": msg.get("ts")}}))
         except (WebSocketDisconnect, RuntimeError):
@@ -151,6 +153,11 @@ class WsHub:
     def _refresh_ui_focus(self) -> None:
         books = {c.book for c in self.clients if c.book}
         self.app.md.request_focus("ui", books)
+        self.app.md.request_focus(self.app.md.UI_LIVE, books)
+
+    def _refresh_live_focus(self) -> None:
+        """Books open in a UI right now get the fast REST refresh (marketdata.ui_book_interval_s)."""
+        self.app.md.request_focus(self.app.md.UI_LIVE, {c.book for c in self.clients if c.book})
 
     async def _sender(self, c: _Client) -> None:
         try:

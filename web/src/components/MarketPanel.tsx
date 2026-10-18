@@ -77,7 +77,7 @@ export function MarketPanel() {
               <Fact label="Inputs" value={Object.entries(fair.detail).map(([k, v]) => `${k}=${String(v)}`).join("  ")} />
             )}
           </div>
-          <TradeTicket ticker={selected} book={book} fair={fair?.q ?? null} feeMultiplier={detail?.fee_multiplier ?? 1} prefill={prefill} />
+          <TradeTicket ticker={selected} book={book} fair={fair?.q ?? null} feeMultiplier={detail?.fee_multiplier ?? 1} prefill={prefill} position={pos} />
           {pos && (
             <div className="position-box">
               <b>

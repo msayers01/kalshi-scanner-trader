@@ -91,6 +91,9 @@ class MarketDataCfg(BaseModel):
     book_depth: int = 25
     poll_markets_interval_s: float = 60.0  # REST mode: catalog+stats refresh cadence for the universe
     poll_books_interval_s: float = 3.0  # REST: refresh focus-set books (100 per request)
+    # REST: extra refresh of only the books open in the UI (≤ 5), so manual tickets price off a book at
+    # most this old. One request per interval; 0 disables. Not used with the WS (books stream there).
+    ui_book_interval_s: float = 1.0
     ws_subscribe_ticker_all: bool = True
     record: bool = False  # write market data to data/recordings for replay
 
