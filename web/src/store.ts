@@ -2,7 +2,7 @@
 // coalesced per-topic updates (≤10 Hz) — the UI never polls.
 import { create } from "zustand";
 import { getToken } from "./api";
-import type { Book, Fill, Limits, LlmStatus, Note, Order, Portfolio, Position, Scan, Status, Verdict } from "./types";
+import type { Book, Fill, Limits, LlmStatus, Note, Order, Portfolio, Position, Scan, ScanQuery, Status, Verdict } from "./types";
 
 type Conn = "connecting" | "open" | "closed";
 
@@ -22,6 +22,36 @@ interface State {
   notes: Note[];
   selected: string | null;
   select: (ticker: string | null) => void;
+  scanQuery: ScanQuery;
+  scanQueryError: string;
+  setScanQuery: (q: ScanQuery) => void;
+}
+
+const QUERY_KEY = "kst.scanQuery";
+
+function loadQuery(): ScanQuery {
+  try {
+    const raw = localStorage.getItem(QUERY_KEY);
+    return raw ? (JSON.parse(raw) as ScanQuery) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Drop empty parts so an "all cleared" query is {} (= the server's plain top-N). */
+export function compactQuery(q: ScanQuery): ScanQuery {
+  const out: ScanQuery = {};
+  const text = Object.fromEntries(Object.entries(q.text ?? {}).filter(([, v]) => v && v.trim()));
+  if (Object.keys(text).length) out.text = text;
+  const ranges = Object.fromEntries(Object.entries(q.ranges ?? {}).filter(([, v]) => v && (v[0] !== null || v[1] !== null)));
+  if (Object.keys(ranges).length) out.ranges = ranges;
+  if (q.signals?.length) out.signals = q.signals;
+  if (q.llm?.length) out.llm = q.llm;
+  if (q.sort) {
+    out.sort = q.sort;
+    out.desc = q.desc ?? true;
+  }
+  return out;
 }
 
 const MAX_FILLS = 200;
@@ -46,6 +76,18 @@ export const useStore = create<State>((set, get) => ({
     if (get().selected === ticker) return;
     set({ selected: ticker, book: null });
     send(ticker ? { op: "sub_book", ticker } : { op: "unsub_book" });
+  },
+  scanQuery: loadQuery(),
+  scanQueryError: "",
+  setScanQuery: (q) => {
+    const c = compactQuery(q);
+    set({ scanQuery: c, scanQueryError: "" });
+    try {
+      localStorage.setItem(QUERY_KEY, JSON.stringify(c));
+    } catch {
+      /* storage blocked: the query lasts for this page only */
+    }
+    send({ op: "scan_query", query: c });
   },
 }));
 
@@ -76,8 +118,12 @@ function apply(msg: Msg): void {
         llm: snap.llm as State["llm"],
       });
       if (s.selected) send({ op: "sub_book", ticker: s.selected });
+      if (Object.keys(s.scanQuery).length) send({ op: "scan_query", query: s.scanQuery }); // per-connection on the server
       break;
     }
+    case "scan_query_error":
+      useStore.setState({ scanQueryError: (msg.data as { error: string }).error });
+      break;
     case "status":
       useStore.setState({ status: d });
       break;

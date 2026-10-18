@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { closePosition } from "../closePosition";
 import { cents, qty, time, usd } from "../format";
 import { useStore } from "../store";
 import { Scorecard } from "./Scorecard";
@@ -57,7 +58,16 @@ function PnlStrip() {
 function Positions() {
   const positions = useStore((s) => s.positions);
   const select = useStore((s) => s.select);
+  const [closing, setClosing] = useState<string | null>(null);
   if (!positions.length) return <div className="empty">Flat.</div>;
+  async function close(p: (typeof positions)[number]) {
+    setClosing(p.ticker);
+    try {
+      await closePosition(p);
+    } finally {
+      setClosing(null);
+    }
+  }
   return (
     <table className="grid">
       <thead>
@@ -70,6 +80,7 @@ function Positions() {
           <th>Exposure</th>
           <th>uPnL</th>
           <th>Strategy</th>
+          <th />
         </tr>
       </thead>
       <tbody>
@@ -89,6 +100,19 @@ function Positions() {
               <td>{usd(p.exposure)}</td>
               <td className={p.unrealized !== null && p.unrealized >= 0 ? "pos" : "neg"}>{usd(p.unrealized)}</td>
               <td className="muted">{p.strategy}</td>
+              <td>
+                <button
+                  className="btn tiny danger ghost"
+                  disabled={closing !== null}
+                  title="Exit the whole position at market"
+                  onClick={(e) => {
+                    e.stopPropagation(); // don't also select the row
+                    void close(p);
+                  }}
+                >
+                  {closing === p.ticker ? "Closing…" : "Sell all"}
+                </button>
+              </td>
             </tr>
           );
         })}

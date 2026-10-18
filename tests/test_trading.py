@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from kst.core.events import MarketStatusChanged, RiskRejected
+from kst.core.events import Alert, MarketStatusChanged, RiskRejected
 from kst.core.fixedpoint import Price, Qty
 from kst.core.types import Actor, BookSide, EngineState, MarketStatus, OrderStatus, TimeInForce
 from kst.domain.orders import Order, QuoteTarget, TakeIntent, new_client_order_id
@@ -231,6 +231,48 @@ async def test_flatten_slices_to_order_caps_and_survives_wide_spread(hs: Harness
     assert hs.oms.live_orders("M") == []  # the resting exit was cancelled first (no flip to NO)
     flats = [o for o in hs.oms.orders.values() if o.strategy == "flatten"]
     assert len(flats) == 3 and all(o.qty == 1000 and o.status is OrderStatus.FILLED for o in flats)
+
+
+async def test_close_position_sells_all_of_one_market_only(hs: Harness) -> None:
+    hs.add_market("M")
+    hs.add_market("N")
+    hs.set_book("M", bids=[(0.40, 100)], asks=[(0.42, 100)])
+    hs.set_book("N", bids=[(0.60, 100)], asks=[(0.62, 100)])
+    await hs.oms.take(_take("M", BookSide.BID, 0.42, 25), "edge_taker")  # long YES
+    await hs.oms.take(_take("N", BookSide.ASK, 0.60, 5), "edge_taker")  # long NO
+    await hs.oms.reconcile(
+        "edge_taker",
+        "M",
+        [QuoteTarget("M", "exit", BookSide.ASK, Price(6000), Qty(2500), reduce_only_intent=True)],
+    )
+    hs.risk.limits = hs.risk.limits.patch({"max_order_contracts": 10})[0]
+    alerts: list[Alert] = []
+    hs.bus.subscribe(Alert, alerts.append)
+    res = await hs.control.close_position("M", Actor.WEB)
+    assert res["ok"] and res["filled"] == 25 and res["remaining"] == 0, res
+    assert hs.portfolio.positions["M"].qty == 0
+    assert hs.oms.live_orders("M") == []  # resting exit cancelled first
+    assert hs.portfolio.positions["N"].qty == -500  # other positions untouched
+    assert hs.state.get() is EngineState.RUNNING  # unlike kill+flatten, trading continues
+    assert [a.title for a in alerts] == ["Close M"]
+    # NO side buys YES back from the asks.
+    assert (await hs.control.close_position("N", Actor.WEB))["ok"]
+    assert hs.portfolio.positions["N"].qty == 0
+
+
+async def test_close_position_without_position_or_liquidity(hs: Harness) -> None:
+    assert (await hs.control.close_position("NOPE", Actor.WEB)) == {
+        "ok": False,
+        "ticker": "NOPE",
+        "reason": "no open position",
+    }
+    hs.add_market("M")
+    hs.set_book("M", bids=[(0.40, 100)], asks=[(0.42, 100)])
+    await hs.oms.take(_take("M", BookSide.BID, 0.42, 5), "edge_taker")
+    hs.set_book("M", bids=[], asks=[(0.42, 100)])  # nobody to sell to
+    res = await hs.control.close_position("M", Actor.WEB)
+    assert not res["ok"] and res["reason"] == "no liquidity"
+    assert hs.portfolio.positions["M"].qty == 500
 
 
 async def test_stacked_exits_cannot_flip_without_entry_checks(hs: Harness) -> None:

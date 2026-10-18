@@ -263,6 +263,10 @@ Button/slash command or HTTP POST /api/control/kill
   state) are never dropped. UI-only events conflate to the latest value.
 - **Backpressure.** The WebSocket hub coalesces per topic per client and
   flushes at ≤ 10 Hz. Slow browser clients never slow the engine.
+- **Scanner queries.** By default every client gets the same top-N scan rows.
+  A client that sends `{"op": "scan_query"}` (column filters and sort from the
+  scanner table) gets matches across *every* scanned market instead, built at
+  most once per distinct query per flush (`scanner/query.py`).
 
 ---
 
@@ -391,6 +395,8 @@ only gates new entries (section 13).
 - The UI header shows the connection dot, market-data age, and loop lag.
 - P&L is reported daily (Discord + `data/pnl/` + log) and on demand
   (`/pnl` in Discord, the UI, and `GET /api/pnl`).
+- Equity is snapshotted once a minute while the engine runs. `GET /api/equity?range=1D|1W|1M|3M|1Y|ALL`
+  serves it downsampled (`portfolio/history.py`) for the UI's portfolio chart.
 
 ---
 

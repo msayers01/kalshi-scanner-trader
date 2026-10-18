@@ -10,6 +10,7 @@ from kst.domain.positions import Position
 
 if TYPE_CHECKING:
     from kst.app import Application
+    from kst.scanner.query import ScanQuery
 
 
 def px(p: int | None) -> float | None:
@@ -154,12 +155,23 @@ def market_detail(app: Application, ticker: str) -> dict[str, Any] | None:
     }
 
 
-def scan(app: Application, limit: int = 100) -> dict[str, Any]:
+def scan(app: Application, limit: int = 100, query: ScanQuery | None = None) -> dict[str, Any]:
+    """Top-ranked rows, or — with an active column query — matches across every scanned market."""
     snap = app.scanner.latest
     if snap is None:
-        return {"ts_ms": 0, "rows": [], "arbs": [], "universe": 0, "priced": 0}
+        return {"ts_ms": 0, "rows": [], "arbs": [], "universe": 0, "priced": 0, "matched": None}
+    matched: int | None = None
+    picked = snap.rows[:limit]
+    if query is not None and query.active:
+
+        def llm_of(t: str) -> str | None:
+            v = app.gate.verdicts.get(t)
+            return None if v is None else ("E" if v.enter else "S")
+
+        ranked = sorted(snap.by_ticker.values(), key=lambda r: r.score, reverse=True)
+        matched, picked = query.run(ranked, llm_of)
     rows = []
-    for r in snap.rows[:limit]:
+    for r in picked:
         d = r.to_dict()
         v = app.gate.verdicts.get(r.ticker)
         d["llm"] = None if v is None else ("E" if v.enter else "S")
@@ -183,4 +195,5 @@ def scan(app: Application, limit: int = 100) -> dict[str, Any]:
         "universe": snap.universe,
         "priced": snap.priced,
         "ms": snap.duration_ms,
+        "matched": matched,  # None = unfiltered top-N
     }
