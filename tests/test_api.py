@@ -44,6 +44,17 @@ async def test_status_and_controls(tmp_path: Path) -> None:
         assert (await c.get("/api/health")).status_code == 200
 
 
+async def test_autotrade_toggle_pushes_status_to_ui(tmp_path: Path) -> None:
+    # The UI checkbox mirrors pushed status, so a toggle that doesn't mark "status" dirty looks stuck.
+    app = _app(tmp_path)
+    async with _client(app) as c:
+        for on in (True, False):
+            app.hub._dirty.clear()
+            assert (await c.post("/api/control/autotrade", json={"on": on})).json()["autotrade"] is on
+            assert "status" in app.hub._dirty
+            assert app.hub.builders()["status"]()["autotrade"] is on
+
+
 async def test_limits_validation(tmp_path: Path) -> None:
     app = _app(tmp_path)
     async with _client(app) as c:
@@ -96,6 +107,16 @@ async def test_manual_order_goes_through_risk(tmp_path: Path) -> None:
             )
         ).json()
         assert not r3["ok"] and "FatFinger" in r3["reason"]
+        # Sell all: open again, then close through the endpoint.
+        await c.post(
+            "/api/orders", json={"ticker": "M", "side": "yes", "price": 0.42, "contracts": 3, "tif": "ioc"}
+        )
+        assert app.portfolio.positions["M"].qty == 300
+        r4 = (await c.post("/api/positions/M/close")).json()
+        assert r4["ok"] and r4["filled"] == 3 and app.portfolio.positions["M"].qty == 0
+        assert (await c.post("/api/positions/M/close")).json()["reason"] == "no open position"
+        evil = await c.post("/api/positions/M/close", headers={"Origin": "https://evil.example"})
+        assert evil.status_code == 403
 
 
 async def test_token_required_when_configured(tmp_path: Path) -> None:

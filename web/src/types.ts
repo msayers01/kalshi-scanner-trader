@@ -92,6 +92,20 @@ export interface Scan {
   universe: number;
   priced: number;
   ms?: number;
+  matched?: number | null; // set when a column query is active: matches across the whole universe
+}
+
+// Mirrors src/kst/scanner/query.py. Units are display units: cents, contracts, hours.
+export type TextCol = "market" | "category";
+export type RangeCol = "bid" | "ask" | "fair" | "edge" | "vol24h" | "closes";
+export type SortCol = TextCol | RangeCol | "signals" | "llm";
+export interface ScanQuery {
+  text?: Partial<Record<TextCol, string>>;
+  ranges?: Partial<Record<RangeCol, [number | null, number | null]>>;
+  signals?: string[];
+  llm?: ("E" | "S" | "none")[];
+  sort?: SortCol | null;
+  desc?: boolean;
 }
 
 export interface Book {
@@ -207,3 +221,15 @@ export interface Note {
 }
 
 export type Limits = Record<string, number>;
+
+export type EquityRange = "1D" | "1W" | "1M" | "3M" | "1Y" | "ALL";
+
+export interface EquitySeries {
+  range: EquityRange;
+  start_ms: number;
+  baseline: number | null; // equity at the start of the range (dollars)
+  current: number | null;
+  change: number | null;
+  change_pct: number | null;
+  points: [number, number][]; // [ts_ms, equity dollars], oldest first
+}

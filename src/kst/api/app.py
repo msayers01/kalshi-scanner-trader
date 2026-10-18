@@ -154,6 +154,21 @@ def create_app(app: Application) -> FastAPI:
             "equity": [[r.ts_ms, r.equity] for r in eq],
         }
 
+    @api.get("/api/equity", dependencies=read)
+    async def equity(
+        range_: str = Query("1D", alias="range"), points: int = Query(400, ge=10, le=2000)
+    ) -> dict[str, Any]:
+        """Portfolio-value series for the chart: downsampled snapshots + the live equity as the last point."""
+        from kst.portfolio.history import RANGES, build_series, range_start
+
+        if range_ not in RANGES:
+            raise HTTPException(422, f"range must be one of {', '.join(RANGES)}")
+        now = app.clock.now_ms()
+        since = 0 if RANGES[range_] is None else range_start(range_, now, None)
+        rows = await app.repo.equity_points(since)
+        current = app.portfolio.summary().equity / 1e6
+        return build_series(range_, rows, now, current, points).to_dict()
+
     @api.get("/api/limits", dependencies=read)
     def limits() -> dict[str, Any]:
         return {
@@ -204,6 +219,11 @@ def create_app(app: Application) -> FastAPI:
     @api.post("/api/control/flatten")
     async def flatten(who: str = Depends(auth)) -> dict[str, Any]:
         return await app.control.flatten(Actor.WEB, who=who)
+
+    @api.post("/api/positions/{ticker}/close")
+    async def close_position(ticker: str, who: str = Depends(auth)) -> dict[str, Any]:
+        """Sell all of one position (IOC within the flatten slippage band, through risk + OMS)."""
+        return await app.control.close_position(ticker, Actor.WEB, who=who)
 
     @api.post("/api/control/autotrade")
     async def autotrade(body: AutotradeBody, who: str = Depends(auth)) -> dict[str, Any]:

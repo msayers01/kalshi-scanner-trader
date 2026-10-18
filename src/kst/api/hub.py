@@ -18,6 +18,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from kst.api import serialize as ser
 from kst.core.events import (
     Alert,
+    AutotradeChanged,
     BookUpdated,
     EngineStateChanged,
     FillReceived,
@@ -30,6 +31,7 @@ from kst.core.events import (
     ScanUpdated,
 )
 from kst.core.logging import get_logger
+from kst.scanner.query import ScanQuery
 
 if TYPE_CHECKING:
     from kst.app import Application
@@ -41,6 +43,7 @@ class _Client:
     def __init__(self, ws: WebSocket) -> None:
         self.ws = ws
         self.book: str | None = None
+        self.scan_query: ScanQuery | None = None  # column filters/sort from the scanner table
         self.queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=200)
         self.dropped = 0
 
@@ -70,6 +73,7 @@ class WsHub:
         bus.subscribe(PositionChanged, lambda _: self._dirty.add("positions"))
         bus.subscribe(OrderUpdated, lambda _: self._dirty.add("orders"))
         bus.subscribe(EngineStateChanged, lambda _: self._dirty.add("status"))
+        bus.subscribe(AutotradeChanged, lambda _: self._dirty.add("status"))
         bus.subscribe(RiskLimitsChanged, lambda _: self._dirty.update({"limits", "status"}))
         bus.subscribe(LLMVerdictsUpdated, lambda _: self._dirty.add("llm"))
         bus.subscribe(BookUpdated, lambda e: self._dirty_books.add(e.ticker))
@@ -113,6 +117,11 @@ class WsHub:
             },
         }
 
+    def _scan_frame(self, query: ScanQuery | None) -> bytes:
+        return orjson.dumps(
+            {"type": "scan", "data": ser.scan(self.app, 100, query)}, option=orjson.OPT_NON_STR_KEYS
+        )
+
     def snapshot(self) -> bytes:
         data = {k: f() for k, f in self.builders().items()}
         return orjson.dumps({"type": "snapshot", "data": data}, option=orjson.OPT_NON_STR_KEYS)
@@ -139,6 +148,14 @@ class WsHub:
                 elif op == "unsub_book":
                     c.book = None
                     self._refresh_live_focus()
+                elif op == "scan_query":
+                    try:
+                        q = ScanQuery.parse(msg.get("query"))
+                    except (ValueError, TypeError) as exc:
+                        c.offer(orjson.dumps({"type": "scan_query_error", "data": {"error": str(exc)}}))
+                        continue
+                    c.scan_query = q if q.active else None
+                    c.offer(self._scan_frame(c.scan_query))
                 elif op == "ping":
                     c.offer(orjson.dumps({"type": "pong", "data": {"ts": msg.get("ts")}}))
         except (WebSocketDisconnect, RuntimeError):
@@ -190,6 +207,10 @@ class WsHub:
             dirty.discard("scan")
         elif "scan" in dirty:
             self._last_scan_ms = now
+        # The scanner table is per client (each may have its own column query): one frame per distinct query.
+        scan_dirty = "scan" in dirty
+        dirty.discard("scan")
+        scan_frames: dict[Any, bytes] = {}
         builders = self.builders()
         frames: list[bytes] = []
         for topic in dirty:
@@ -204,6 +225,11 @@ class WsHub:
         for c in list(self.clients):
             for fr in frames:
                 c.offer(fr)
+            if scan_dirty:
+                k = c.scan_query.key() if c.scan_query is not None else None
+                if k not in scan_frames:
+                    scan_frames[k] = self._scan_frame(c.scan_query)
+                c.offer(scan_frames[k])
             if c.book and c.book in books:
                 if c.book not in book_frames:
                     book_frames[c.book] = orjson.dumps({"type": "book", "data": ser.book(self.app, c.book)})

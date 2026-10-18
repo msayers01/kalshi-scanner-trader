@@ -2,7 +2,8 @@
 
 * Persistent control panel (buttons survive restarts): Pause · Resume · KILL · Kill+Flatten (2-step
   confirm) · Status · P&L · Autotrade toggle. `/panel` posts it.
-* Slash commands: /status /pnl /positions /scan /pause /resume /kill /flatten /autotrade /limits /setlimit
+* Slash commands: /status /pnl /positions /scan /pause /resume /kill /flatten /close /autotrade /limits
+  /setlimit
 * Only `discord.allowed_user_ids` may use controls (checked on every interaction; replies are ephemeral).
 * Notifier: fills (batched), engine state changes, risk alerts, settlements, daily report — rate limited.
 """
@@ -270,6 +271,19 @@ class KstBot(commands.Bot):
                 await interaction.response.send_message(
                     "Confirm kill + flatten:", view=ConfirmFlatten(self), ephemeral=True
                 )
+
+        @tree.command(name="close", description="Sell all of one position at market (≤ slippage band)")
+        async def close(interaction: discord.Interaction, ticker: str) -> None:
+            if await self.authorized(interaction):
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                r = await app.control.close_position(
+                    ticker.strip().upper(), Actor.DISCORD, who=str(interaction.user.id)
+                )
+                if r["ok"] and not r.get("remaining"):
+                    msg = f"✅ Closed {r['ticker']}: sold {r['filled']:g}."
+                else:
+                    msg = f"⚠️ {r['ticker']}: sold {r.get('filled', 0):g}, {r.get('remaining', 0):g} left. {r.get('reason', '')}"
+                await interaction.followup.send(msg, ephemeral=True)
 
         @tree.command(name="autotrade", description="Turn automatic trading on/off")
         async def autotrade(interaction: discord.Interaction, on: bool) -> None:

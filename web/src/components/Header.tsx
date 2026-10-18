@@ -8,6 +8,7 @@ export function Header() {
   const portfolio = useStore((s) => s.portfolio);
   const conn = useStore((s) => s.conn);
   const latency = useStore((s) => s.latencyMs);
+  const select = useStore((s) => s.select);
   const [busy, setBusy] = useState(false);
 
   async function act(path: string, body: unknown = {}, confirmText?: string) {
@@ -38,7 +39,10 @@ export function Header() {
       <span className="muted small">{latency !== null ? `${latency} ms` : ""}</span>
 
       <div className="kpis">
-        <Kpi label="Equity" value={usd(portfolio?.equity ?? status?.equity)} />
+        <button className="kpi kpi-btn" title="Show the portfolio chart" onClick={() => select(null)}>
+          <div className="kpi-label">Equity</div>
+          <div className="kpi-value">{usd(portfolio?.equity ?? status?.equity)}</div>
+        </button>
         <Kpi label="Today" value={usd(pnl)} tone={pnl >= 0 ? "pos" : "neg"} />
         <Kpi label="Unrealized" value={usd(portfolio?.unrealized)} />
         <Kpi label="Exposure" value={usd(portfolio?.exposure)} />
