@@ -51,6 +51,11 @@ class EdgeTaker(Strategy):
 
         if not ctx.allow_entries:
             return d
+        mid = ctx.book.mid()
+        fv = post.fv
+        if fv is not None and mid is not None and abs(fv.p - mid) > self.cfg.max_disagreement:
+            d.note = f"disagree model={fv.p:.3f} mid={mid:.3f}"  # likelier a model/data error than free money
+            return d
 
         # ---- entries: add only in the direction of the current position (or from flat)
         theta = self.threshold(sd)
@@ -77,7 +82,7 @@ class EdgeTaker(Strategy):
         p_win = q if side is BookSide.BID else 1.0 - q
         n = whole_contracts(kelly_contracts(p_win, sd, cost, ctx.bankroll_usd, self.cfg.kelly_fraction))
         have = abs(ctx.pos_qty)
-        return max(0, n - have)
+        return ctx.clip_qty(max(0, n - have), cost)
 
     def _taker_entry(
         self, ctx: StrategyContext, side: BookSide, q: float, sd: float, theta: float

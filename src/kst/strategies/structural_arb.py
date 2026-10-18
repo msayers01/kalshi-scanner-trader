@@ -29,6 +29,8 @@ class StructuralArb:
         book_of: Callable[[str], OrderBook | None],
         *,
         max_usd: float | None = None,
+        max_contracts: float | None = None,
+        max_leg_usd: float | None = None,
     ) -> list[TakeIntent]:
         if opp.edge <= self.cfg.margin:
             return []
@@ -43,6 +45,11 @@ class StructuralArb:
         budget = min(self.cfg.max_basket_usd, max_usd if max_usd is not None else self.cfg.max_basket_usd)
         cost = max(opp.cost_per_basket, 1e-6)
         qty = min(qty, int(budget / cost) * 100)
+        if max_contracts is not None:
+            qty = min(qty, int(max_contracts * 100))
+        if max_leg_usd is not None:
+            worst_leg = max(self.leg_cost(leg.side, leg.price) for leg in opp.legs)
+            qty = min(qty, int(max_leg_usd / max(worst_leg, 1e-6)) * 100)
         qty = (qty // 100) * 100  # whole baskets
         if qty < 100:
             return []

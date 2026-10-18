@@ -123,15 +123,15 @@ def test_ladder_arb() -> None:
     ev = Event("E", "S", mutually_exclusive=False)
     # P(>100) must be ≥ P(>110); here bid(>110)=0.55 > ask(>100)=0.45 → buy YES >100, sell YES >110
     ms = [
-        mk("k100", StrikeType.GREATER, 100, None, 4300, 4500),
-        mk("k110", StrikeType.GREATER, 110, None, 5500, 5700),
-        mk("k120", StrikeType.GREATER, 120, None, 2000, 2200),
+        mk("E-T100", StrikeType.GREATER, 100, None, 4300, 4500),
+        mk("E-T110", StrikeType.GREATER, 110, None, 5500, 5700),
+        mk("E-T120", StrikeType.GREATER, 120, None, 2000, 2200),
     ]
     arbs = detect_event_arbs(ev, ms, top, lambda _: FEES, margin=0.0, rounding=0.0)
     lad = [a for a in arbs if a.kind == "ladder"]
     assert len(lad) == 1
     legs = {leg.ticker: leg for leg in lad[0].legs}
-    assert legs["k100"].side is BookSide.BID and legs["k110"].side is BookSide.ASK
+    assert legs["E-T100"].side is BookSide.BID and legs["E-T110"].side is BookSide.ASK
     assert lad[0].edge == pytest.approx(0.55 - 0.45 - 0.07 * 0.55 * 0.45 * 2)
 
 
@@ -143,3 +143,13 @@ def test_no_arb_in_coherent_event() -> None:
         mk("c", StrikeType.GREATER, 63, None, 2900, 3100),
     ]
     assert detect_event_arbs(ev, ms, top, lambda _: FEES, margin=0.005) == []
+
+
+def test_no_ladder_across_different_underlyings() -> None:
+    # e.g. KXRAIN: one "greater 0" market per city — not a ladder, must not produce arbs
+    ev = Event("KXRAIN-26OCT17", "KXRAIN", mutually_exclusive=False)
+    ms = [
+        mk("KXRAIN-26OCT17-ABQ", StrikeType.GREATER, 0, None, None, 100),
+        mk("KXRAIN-26OCT17-DC", StrikeType.GREATER, 0, None, 9900, None),
+    ]
+    assert detect_event_arbs(ev, ms, top, lambda _: FEES, margin=0.0) == []

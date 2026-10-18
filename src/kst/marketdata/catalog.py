@@ -12,7 +12,7 @@ from kst.core.clock import Clock
 from kst.core.events import CatalogRefreshed
 from kst.core.logging import get_logger
 from kst.domain.fees import FeeModel, FeeSchedule
-from kst.domain.market import Event, Market, Series
+from kst.domain.market import Event, Market, Series, series_from_event_ticker
 from kst.kalshi.parse import parse_event, parse_market, parse_series
 from kst.kalshi.rest import KalshiRest
 
@@ -134,38 +134,60 @@ class MarketCatalog:
         log.info("series_loaded", n=len(self.series))
 
     async def refresh(self, rest: KalshiRest) -> None:
+        """Pull open markets closing inside the horizon (also refreshes their top-of-book stats), then
+        fetch metadata only for events we haven't seen. Cost ≈ (#markets/500) pages + new events/50."""
         now = self.clock.now_ms()
         if not self.series or now - self._series_loaded_ms > self.cfg.series_refresh_s * 1000:
             try:
                 await self.refresh_series(rest)
             except Exception:
                 log.exception("series_refresh_failed")
-        params: dict[str, object] = {"min_close_ts": now // 1000}
-        series_filter: list[str | None] = list(self.cfg.include_series) or [None]
-        new_events: dict[str, Event] = {}
+        base: dict[str, object] = {
+            "status": "open",
+            "mve_filter": "exclude",
+            "min_close_ts": now // 1000 + int(self.cfg.min_seconds_to_close),
+            "max_close_ts": now // 1000 + int(self.cfg.max_hours_to_close * 3600),
+        }
+        queries = [dict(base, series_ticker=sr) for sr in self.cfg.include_series] or [base]
         seen: set[str] = set()
-        for s in series_filter:
-            p = dict(params)
-            if s:
-                p["series_ticker"] = s
-            async for raw in rest.events(status="open", nested_markets=True, **p):
-                ev, markets = parse_event(raw)
-                if not ev.category and (ser := self.series.get(ev.series_ticker)):
-                    ev.category = ser.category
-                for m in markets:
-                    m.category = m.category or ev.category
-                if not any(self.in_universe(m, now) for m in markets):
-                    continue
-                new_events[ev.event_ticker] = ev
-                for m in markets:
-                    self.upsert_market(m)
-                    seen.add(m.ticker)
-        self.events = new_events
-        self.universe = {t for t in seen if self.in_universe(self.markets[t], now)}
-        # Drop markets that are gone, unless pinned (open positions / orders).
+        for q in queries:
+            async for raw in rest.markets(page_delay_s=self.cfg.page_delay_s, **q):
+                ev_t = raw.get("event_ticker", "")
+                ser = self.series.get(series_from_event_ticker(ev_t))
+                m = parse_market(raw, category=ser.category if ser else "")
+                m.stats_ts_ms = now
+                if ser is None and (ev := self.events.get(ev_t)) is not None:
+                    m.category, m.series_ticker = ev.category, ev.series_ticker
+                self.upsert_market(m)
+                seen.add(m.ticker)
+        # Event metadata (mutually_exclusive, category) for events not cached yet.
+        ev_tickers = {self.markets[t].event_ticker for t in seen}
+        missing = sorted(e for e in ev_tickers if e and e not in self.events)
+        if missing:
+            try:
+                for raw in await rest.events_by_ticker(missing):
+                    ev, _ = parse_event(raw)
+                    if not ev.category and (ser := self.series.get(ev.series_ticker)):
+                        ev.category = ser.category
+                    self.events[ev.event_ticker] = ev
+            except Exception:
+                log.exception("event_metadata_failed", n=len(missing))
+        # Rebuild event membership from the markets we hold.
+        members: dict[str, list[str]] = {}
+        for t in seen | self.pinned:
+            if (mk := self.markets.get(t)) is not None:
+                members.setdefault(mk.event_ticker, []).append(t)
+                if (ev := self.events.get(mk.event_ticker)) is not None and not mk.category:
+                    mk.category = ev.category
+        for e, ts in members.items():
+            if (ev := self.events.get(e)) is not None:
+                ev.market_tickers = sorted(ts)
+        for e in [e for e in self.events if e not in members]:
+            del self.events[e]
         for t in list(self.markets):
             if t not in seen and t not in self.pinned:
                 del self.markets[t]
+        self.universe = {t for t in seen if self.in_universe(self.markets[t], now)}
         self.last_refresh_ms = now
         log.info(
             "catalog_refreshed",

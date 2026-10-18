@@ -27,6 +27,18 @@ class StrategyContext:
     allow_entries: bool = False  # RUNNING + autotrade + gate approved + risk headroom
     side_bias: BookSide | None = None  # optional LLM hint; strategies may only use it to *restrict* entries
     rounding: float = 0.0001  # $ per fill (fee balance-precision allowance)
+    max_order_qty: int = 1 << 40  # Qty cap per order (risk.max_order_contracts)
+    max_order_usd: float = float("inf")  # $ cost cap per order
+    max_position_qty: int = 1 << 40  # Qty cap on |position| in this market
+
+    def clip_qty(self, want: int, cost_per_contract: float) -> int:
+        """Clip a desired opening size to the risk caps; whole contracts."""
+        room = max(0, self.max_position_qty - abs(self.pos_qty))
+        by_usd = want
+        if self.max_order_usd != float("inf"):
+            by_usd = int(self.max_order_usd / max(cost_per_contract, 1e-6)) * 100
+        q = min(want, self.max_order_qty, by_usd, room)
+        return (q // 100) * 100
 
     @property
     def pos_qty(self) -> int:

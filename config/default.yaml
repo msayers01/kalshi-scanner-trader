@@ -18,13 +18,13 @@ universe:
   include_series: []          # if non-empty, ONLY these series are scanned
   exclude_series: []
   min_volume_24h: 0
-  max_hours_to_close: 336     # 14 days
+  max_hours_to_close: 24      # fetch horizon; 72h ≈ 33k markets — widen with care
   min_seconds_to_close: 60
 
 marketdata:
   source: auto                # auto | ws | poll   (WS needs API keys)
   focus_size: 40              # markets with full-depth books
-  poll_markets_interval_s: 20
+  poll_markets_interval_s: 60  # REST mode: universe stats refresh
   poll_books_interval_s: 3
   record: false               # record market data for replay/backtests
 

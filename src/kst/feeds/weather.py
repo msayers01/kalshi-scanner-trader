@@ -91,7 +91,9 @@ class WeatherFeed:
         if now < start:
             return
         iso = datetime.fromtimestamp(start / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        r = await self.http.get(f"{NWS}/stations/{st.nws_station}/observations", params={"start": iso})
+        r = await self.http.get(
+            f"{NWS}/stations/{st.nws_station}/observations", params={"start": iso, "limit": 500}
+        )
         r.raise_for_status()
         temps_c = [
             f["properties"]["temperature"]["value"]

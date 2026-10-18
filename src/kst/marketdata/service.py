@@ -26,7 +26,6 @@ from kst.core.logging import get_logger
 from kst.core.types import MarketStatus
 from kst.domain.orderbook import OrderBook
 from kst.kalshi.parse import (
-    parse_market,
     parse_rest_orderbook,
     parse_trade,
     parse_ws_delta,
@@ -242,33 +241,6 @@ class MarketDataService:
                     self.errors += 1
                     log.warning("poll_books_error", error=str(exc))
             await asyncio.sleep(max(0.2, self.cfg.poll_books_interval_s - (time.monotonic() - t0)))
-
-    async def run_poll_stats(self) -> None:
-        """Universe top-of-book via /markets?tickers=... (100 per call)."""
-        while True:
-            t0 = time.monotonic()
-            tickers = sorted(self.catalog.universe)
-            try:
-                for i in range(0, len(tickers), 100):
-                    chunk = tickers[i : i + 100]
-                    now = self.clock.now_ms()
-                    async for raw in self.rest.markets(tickers=",".join(chunk), limit=100):
-                        m = self.catalog.get(raw.get("ticker", ""))
-                        if m is None:
-                            continue
-                        old_status = m.status
-                        update_market_stats(m, raw, now)
-                        if m.status is not old_status:
-                            fresh = parse_market(raw)
-                            self.bus.publish(MarketStatusChanged(now, m.ticker, m.status, fresh.result))
-                        self.bus.publish(TopOfBookUpdated(now, m.ticker))
-                self.last_stats_poll_ms = self.clock.now_ms()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self.errors += 1
-                log.warning("poll_stats_error", error=str(exc))
-            await asyncio.sleep(max(1.0, self.cfg.poll_markets_interval_s - (time.monotonic() - t0)))
 
     async def run_poll_trades(self, interval_s: float = 5.0) -> None:
         """Exchange-wide public trades since the last poll (feeds the paper maker-fill model)."""

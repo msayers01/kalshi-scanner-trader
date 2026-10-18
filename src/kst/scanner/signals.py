@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -10,6 +11,10 @@ from kst.core.fixedpoint import PRICE_SCALE, Price, Qty
 from kst.core.types import BookSide, StrikeType
 from kst.domain.fees import FeeSchedule
 from kst.domain.market import Event, Market
+
+# Kalshi strike-ladder tickers end in -T<strike> (e.g. KXBTCD-26OCT1817-T91249.99). Events like KXRAIN
+# (one market per city) also use "greater" strikes but are NOT a ladder on one underlying.
+_LADDER_TICKER = re.compile(r"-T-?\d+(\.\d+)?$")
 
 # (bid, bid_qty, ask, ask_qty) for a market; None entries when that side is empty.
 TopOfBook = tuple[Price | None, Qty, Price | None, Qty]
@@ -175,15 +180,19 @@ def _ladder_arbs(
     """Monotonicity: P(>K) non-increasing in K; P(<K) non-decreasing in K."""
     out: list[ArbOpportunity] = []
     for kind in (StrikeType.GREATER, StrikeType.LESS):
+        rungs = [m for m in markets if m.strike_type is kind and _LADDER_TICKER.search(m.ticker)]
+        strikes = [m.floor_strike if kind is StrikeType.GREATER else m.cap_strike for m in rungs]
+        if len(rungs) < 2 or None in strikes or len(set(strikes)) != len(strikes):
+            continue
         if kind is StrikeType.GREATER:
             ladder = sorted(
-                (m for m in markets if m.strike_type is kind and m.floor_strike is not None),
+                (m for m in rungs if m.floor_strike is not None),
                 key=lambda m: m.floor_strike or 0.0,
             )
         else:
             # For "less", P(<K) increases with K → reverse so the same "buy low-index, sell high-index" logic applies.
             ladder = sorted(
-                (m for m in markets if m.strike_type is kind and m.cap_strike is not None),
+                (m for m in rungs if m.cap_strike is not None),
                 key=lambda m: -(m.cap_strike or 0.0),
             )
         best: tuple[float, Market, Market] | None = None

@@ -101,11 +101,21 @@ def test_exit_for_no_position() -> None:
 
 def test_edge_taker_takes_positive_edge() -> None:
     et = EdgeTaker(EdgeTakerCfg())
-    d = et.evaluate(_ctx(0.60, 0.01, _book([(4300, 5000)], [(4500, 2000), (4700, 5000), (5800, 5000)])))
+    d = et.evaluate(_ctx(0.60, 0.01, _book([(4900, 5000)], [(5100, 2000), (5300, 5000), (5800, 5000)])))
     assert len(d.takes) == 1
     t = d.takes[0]
-    assert t.side is BookSide.BID and t.limit == 4700  # walks to 47¢, not 58¢ (EV ≤ θ there)
+    assert t.side is BookSide.BID and t.limit == 5300  # walks to 53¢, not 58¢ (EV ≤ θ there)
     assert t.qty % 100 == 0 and t.qty > 0
+
+
+def test_edge_taker_distrusts_large_disagreement_and_clips_size() -> None:
+    et = EdgeTaker(EdgeTakerCfg(max_disagreement=0.15))
+    d = et.evaluate(_ctx(0.60, 0.01, _book([(4300, 5000)], [(4500, 5000)])))
+    assert d.empty and d.note.startswith("disagree")
+    ctx = _ctx(0.60, 0.01, _book([(4900, 50_000)], [(5100, 50_000)]))
+    ctx.max_order_qty = 700
+    d2 = et.evaluate(ctx)
+    assert d2.takes and d2.takes[0].qty == 700  # clipped to the cap, not rejected downstream
 
 
 def test_edge_taker_no_trade_without_edge_and_respects_allow() -> None:
@@ -114,6 +124,14 @@ def test_edge_taker_no_trade_without_edge_and_respects_allow() -> None:
     assert et.evaluate(_ctx(0.50, 0.01, book)).empty
     strong = _book([(4300, 5000)], [(4500, 5000)])
     assert et.evaluate(_ctx(0.60, 0.01, strong, allow=False)).empty
+
+
+def test_horizon_nu_thins_tails_with_time() -> None:
+    from kst.pricing.crypto import horizon_nu
+
+    assert horizon_nu(300) == 5.0  # minutes: fat tails (clamped at ν_min)
+    assert 5.0 < horizon_nu(3 * 3600) < 20 < horizon_nu(24 * 3600)  # hours: toward normal
+    assert horizon_nu(3600) == pytest.approx(4 + 6 / 3.0)
 
 
 def test_edge_taker_sells_overpriced_yes() -> None:

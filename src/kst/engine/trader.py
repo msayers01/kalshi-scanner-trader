@@ -238,6 +238,9 @@ class AutoTrader:
             allow_entries=allow,
             side_bias=self.gate.side_bias(ticker) if self.gate.cfg.mode == "gate" else None,
             rounding=self.s.fees.rounding_allowance,
+            max_order_qty=int(self.risk.limits.max_order_contracts * 100),
+            max_order_usd=self.risk.limits.max_order_usd,
+            max_position_qty=int(self.risk.limits.max_position_contracts * 100),
         )
         d = strat.evaluate(ctx)
         gated = ""
@@ -267,7 +270,10 @@ class AutoTrader:
                 continue
             if any(not self.md.is_fresh(leg.ticker, now) for leg in opp.legs):
                 continue
-            takes = self.arb.plan(opp, self.md.book)
+            lim = self.risk.limits
+            takes = self.arb.plan(
+                opp, self.md.book, max_contracts=lim.max_order_contracts, max_leg_usd=lim.max_order_usd
+            )
             if not takes:
                 continue
             # Pre-check every leg; send nothing unless all legs pass (avoid legging into naked risk).
@@ -279,9 +285,9 @@ class AutoTrader:
                 )
                 for t in takes
             ]
+            self._last_take[key] = now  # cooldown applies to rejected baskets too (no log spam)
             if not all(c.ok for c in checks):
                 continue
-            self._last_take[key] = now
             log.info(
                 "arb_execute",
                 event_ticker=opp.event_ticker,

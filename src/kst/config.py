@@ -78,9 +78,10 @@ class UniverseCfg(BaseModel):
     include_series: list[str] = Field(default_factory=list)  # if set, ONLY these series
     exclude_series: list[str] = Field(default_factory=list)
     min_volume_24h: float = 0.0  # contracts
-    max_hours_to_close: float = 24 * 14  # ignore markets closing later than this
+    max_hours_to_close: float = 24  # horizon: markets closing later are not fetched (24 h ≈ 5k markets, 9 MB)
     min_seconds_to_close: int = 60
-    catalog_refresh_s: float = 300.0
+    catalog_refresh_s: float = 300.0  # WS mode (ticker channel keeps stats fresh in between)
+    page_delay_s: float = 1.0  # spacing between heavy /markets pages (unauthenticated limits are tight)
     series_refresh_s: float = 6 * 3600.0
 
 
@@ -88,7 +89,7 @@ class MarketDataCfg(BaseModel):
     source: Literal["auto", "ws", "poll"] = "auto"  # auto = ws if credentials else REST polling
     focus_size: int = 40  # markets with full depth (orderbook) subscriptions
     book_depth: int = 25
-    poll_markets_interval_s: float = 20.0  # REST: refresh top-of-book for the whole universe
+    poll_markets_interval_s: float = 60.0  # REST mode: catalog+stats refresh cadence for the universe
     poll_books_interval_s: float = 3.0  # REST: refresh focus-set books (100 per request)
     ws_subscribe_ticker_all: bool = True
     record: bool = False  # write market data to data/recordings for replay
@@ -186,7 +187,8 @@ class FeedsCfg(BaseModel):
 
 class CryptoPricingCfg(BaseModel):
     distribution: Literal["normal", "student_t"] = "student_t"  # fat tails price cheap OTM contracts better
-    nu: float = 5.0  # Student-t degrees of freedom (>2)
+    nu: float = 5.0  # minimum Student-t ν (fattest tails, at short horizons); must be > 4
+    excess_kurtosis_1h: float = 3.0  # 1-hour log-return excess kurtosis; tails thin as 1/τ (see horizon_nu)
     averaging_window_s: float = 60.0  # settlement = mean of last 60 1-s RTI prints
     vol_sample_s: float = 5.0
     fast_half_life_s: float = 300.0
@@ -248,6 +250,7 @@ class EdgeTakerCfg(BaseModel):
     exit_premium: float = 0.02  # passive take-profit quote at q̂ + premium
     exit_slack_k: float = 0.0  # exit when liquidation ≥ q̂ − k·σ
     max_levels: int = 3  # book levels an IOC may walk
+    max_disagreement: float = 0.15  # |model − mid| beyond this ⇒ distrust the model, no entry
 
 
 class MarketMakerCfg(BaseModel):
@@ -304,6 +307,7 @@ class EngineCfg(BaseModel):
     autotrade: bool = False  # first run: scanner + manual only. Flip after reviewing paper results.
     tick_s: float = 0.25
     manage_manual_positions: bool = False  # let strategies exit positions they didn't open
+    cancel_on_shutdown: bool = True  # live/demo: cancel strategy orders on a graceful shutdown
 
 
 class ProviderCfg(BaseModel):

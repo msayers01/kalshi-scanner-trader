@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
-from scipy import stats
+from scipy import special
 
 from kst.core.clock import ms_to_dt
 from kst.core.types import StrikeType
@@ -86,7 +86,7 @@ class KernelCDF:
         self.bandwidth = max(h_min, inflation * spread * j ** (-0.2), inflation * spread * 0.5)
 
     def __call__(self, k: float) -> float:
-        return float(np.mean(stats.norm.cdf((k + 0.5 - self.x) / self.bandwidth)))
+        return float(np.mean(special.ndtr((k + 0.5 - self.x) / self.bandwidth)))
 
 
 def strike_probability_int(
@@ -146,6 +146,7 @@ class WeatherEnsembleModel:
         min_bandwidth_f: float = 1.0,
         model_floor: float = 0.02,
         max_forecast_age_s: float = 4 * 3600.0,
+        obs_required_after_s: float = 2 * 3600.0,
     ) -> None:
         self.store = store
         self.stations = stations
@@ -154,6 +155,7 @@ class WeatherEnsembleModel:
         self.h_min = min_bandwidth_f
         self.model_floor = model_floor
         self.max_age_ms = int(max_forecast_age_s * 1000)
+        self.obs_required_after_ms = int(obs_required_after_s * 1000)
 
     def applies(self, market: Market) -> bool:
         return market.series_ticker in self.stations and market.strike_type in self._STRIKES
@@ -170,6 +172,8 @@ class WeatherEnsembleModel:
             return None  # day over; settlement pending — nothing to model
         obs = self.store.observations.get(market.series_ticker)
         m_obs = obs.max_f if obs is not None and obs.day == d and now_ms >= start else None
+        if m_obs is None and now_ms >= start + self.obs_required_after_ms:
+            return None  # day underway but we don't know the max so far: forecast-only would be wrong
         rem = fc.remaining_max(max(start, now_ms), end)
         bias = self.bias_f if bias_override is None else bias_override
         if rem is None:

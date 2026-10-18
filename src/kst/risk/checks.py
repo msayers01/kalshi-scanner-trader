@@ -193,6 +193,8 @@ def sufficient_balance(p: OrderProposal, c: RiskContext) -> CheckResult | None:
 
 
 def price_band(p: OrderProposal, c: RiskContext) -> CheckResult | None:
+    if p.basket_id:
+        return None  # hedged arb legs may sit at extreme prices
     x = p.price / PRICE_SCALE
     # For NO entries the economically relevant price is the NO price.
     eff = x if p.side is BookSide.BID else 1 - x

@@ -173,7 +173,8 @@ class LLMGate:
         if not self.pending or not self.enabled or not self.budget_left():
             return False
         now = self.clock.now_ms()
-        if now - self.last_call_ms < self.cfg.min_interval_s * 1000:
+        backoff = self.cfg.min_interval_s * (2 ** min(self.failures, 5))  # provider down → 20 s … ~10 min
+        if now - self.last_call_ms < backoff * 1000:
             return False
         oldest = min(t for _, _, t in self.pending.values())
         return len(self.pending) >= self.cfg.min_batch or now - oldest >= self.cfg.max_wait_s * 1000

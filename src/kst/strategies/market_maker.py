@@ -116,7 +116,7 @@ class MarketMaker(Strategy):
 
         max_inv = 100 * self.cfg.max_inventory
         taper = max(0.0, 1.0 - abs(ctx.pos_qty) / max_inv)
-        size = Qty(int(self.cfg.quote_size * max(taper, 0.2)) * 100)
+        size = Qty(ctx.clip_qty(int(self.cfg.quote_size * max(taper, 0.2)) * 100, max(fair, 1 - fair)))
         bb, ba = book.best_bid, book.best_ask
 
         for side in (BookSide.BID, BookSide.ASK):

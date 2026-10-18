@@ -60,6 +60,7 @@ class KalshiRest:
         self.default_cost = default_cost
         self.cancel_cost = cancel_cost
         self.subaccount = subaccount
+        self.throttled = 0  # 429 count (exposed in /api/health)
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_s, connect=5.0),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
@@ -115,9 +116,10 @@ class KalshiRest:
                 attempt += 1
                 if resp.status_code == 429:
                     bucket.drain()
-                if attempt > retries:
+                    self.throttled += 1
+                if attempt > max(retries, 5 if method == "GET" else retries):
                     self._raise(resp, path)
-                await asyncio.sleep(min(0.25 * 2**attempt, 4.0))
+                await asyncio.sleep(min(0.5 * 2**attempt, 16.0))
                 continue
             if resp.status_code >= 400:
                 self._raise(resp, path)
@@ -149,9 +151,13 @@ class KalshiRest:
         *,
         auth: bool = False,
         max_pages: int = 500,
+        page_delay_s: float = 0.0,
     ) -> AsyncIterator[dict[str, Any]]:
+        """Cursor pagination. `page_delay_s` spaces heavy pages (large /markets pages are throttled harder)."""
         p = dict(params or {})
-        for _ in range(max_pages):
+        for page in range(max_pages):
+            if page and page_delay_s:
+                await asyncio.sleep(page_delay_s)
             data = await self.request("GET", path, params=p, auth=auth)
             for item in data.get(key) or []:
                 yield item
@@ -177,9 +183,18 @@ class KalshiRest:
         q = {"status": status, "with_nested_markets": str(nested_markets).lower(), "limit": 200, **params}
         return self.paginate("/events", "events", q)
 
-    def markets(self, **params: Any) -> AsyncIterator[dict[str, Any]]:
-        q = {"limit": 1000, **params}
-        return self.paginate("/markets", "markets", q)
+    def markets(self, *, page_delay_s: float = 0.0, **params: Any) -> AsyncIterator[dict[str, Any]]:
+        q = {"limit": 500, **params}
+        return self.paginate("/markets", "markets", q, page_delay_s=page_delay_s)
+
+    async def events_by_ticker(self, event_tickers: list[str], chunk: int = 50) -> list[dict[str, Any]]:
+        """Event metadata (no nested markets) for specific events, in chunks."""
+        out: list[dict[str, Any]] = []
+        for i in range(0, len(event_tickers), chunk):
+            part = event_tickers[i : i + chunk]
+            data = await self.request("GET", "/events", params={"tickers": ",".join(part), "limit": 200})
+            out.extend(data.get("events") or [])
+        return out
 
     async def market(self, ticker: str) -> dict[str, Any]:
         return (await self.request("GET", f"/markets/{ticker}")).get("market") or {}

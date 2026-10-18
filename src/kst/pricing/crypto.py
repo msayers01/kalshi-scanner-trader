@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from scipy import stats
+from scipy import special
 
 from kst.core.types import StrikeType
 from kst.domain.market import Market
@@ -27,8 +27,8 @@ def std_cdf(z: float, dist: str = "normal", nu: float = 5.0) -> float:
     if math.isinf(z):
         return 1.0 if z > 0 else 0.0
     if dist == "student_t":
-        return float(stats.t.cdf(z * math.sqrt(nu / (nu - 2.0)), df=nu))
-    return float(stats.norm.cdf(z))
+        return float(special.stdtr(nu, z * math.sqrt(nu / (nu - 2.0))))
+    return float(special.ndtr(z))
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +88,19 @@ def strike_probability(
     if strike_type is StrikeType.BETWEEN and floor is not None and cap is not None:
         return max(0.0, sd.cdf(cap) - sd.cdf(floor))
     return None
+
+
+def horizon_nu(tau_s: float, nu_min: float = 5.0, excess_kurtosis_1h: float = 3.0) -> float:
+    """Student-t ν for a horizon τ.
+
+    For i.i.d. increments, excess kurtosis of an n-period sum scales as κ₁/n, so κ(τ) = κ_1h·(3600/τ).
+    A unit-variance t_ν has excess kurtosis 6/(ν−4)  ⇒  ν(τ) = 4 + 6/κ(τ), clamped to [ν_min, 200].
+    Short horizons keep fat tails; multi-hour horizons converge to (near-)normal, as the CLT requires.
+    """
+    kappa = excess_kurtosis_1h * 3600.0 / max(tau_s, 1.0)
+    if kappa <= 0:
+        return 200.0
+    return min(200.0, max(nu_min, 4.0 + 6.0 / kappa))
 
 
 # ------------------------------------------------------------------ reference store (fed by adapters)
@@ -151,6 +164,7 @@ class CryptoDigitalModel:
         max_ref_age_s: float = 10.0,
         min_samples: int = 30,
         proxy_basis_sd: float = 0.0005,
+        excess_kurtosis_1h: float = 3.0,
     ) -> None:
         self.store = store
         self.series_index = series_index
@@ -160,6 +174,7 @@ class CryptoDigitalModel:
         self.max_ref_age_ms = int(max_ref_age_s * 1000)
         self.min_samples = min_samples
         self.proxy_basis_sd = proxy_basis_sd
+        self.excess_kurtosis_1h = excess_kurtosis_1h
 
     def index_for(self, market: Market) -> str | None:
         return self.series_index.get(market.series_ticker)
@@ -175,7 +190,13 @@ class CryptoDigitalModel:
         self, market: Market, spot: float, var: float, tau_s: float, obs_avg: float | None
     ) -> float | None:
         sd = settlement_distribution(
-            spot, var, tau_s, window_s=self.window_s, observed_avg=obs_avg, dist=self.distribution, nu=self.nu
+            spot,
+            var,
+            tau_s,
+            window_s=self.window_s,
+            observed_avg=obs_avg,
+            dist=self.distribution,
+            nu=horizon_nu(tau_s, self.nu, self.excess_kurtosis_1h),
         )
         return strike_probability(sd, market.strike_type, market.floor_strike, market.cap_strike)
 

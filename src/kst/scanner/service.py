@@ -170,10 +170,33 @@ class ScannerService:
     # ------------------------------------------------------------------ one scan
 
     def scan_once(self) -> ScanSnapshot:
+        """Synchronous full scan (tests, one-shot tools)."""
+        gen = self._scan_steps()
+        while True:
+            try:
+                next(gen)
+            except StopIteration as stop:
+                snap: ScanSnapshot = stop.value
+                return snap
+
+    async def scan_async(self, chunk: int = 300) -> ScanSnapshot:
+        """Same scan, yielding to the event loop every `chunk` markets (keeps order handling responsive)."""
+        gen = self._scan_steps(chunk)
+        while True:
+            try:
+                next(gen)
+            except StopIteration as stop:
+                snap: ScanSnapshot = stop.value
+                return snap
+            await asyncio.sleep(0)
+
+    def _scan_steps(self, chunk: int = 300):  # type: ignore[no-untyped-def]
         t0 = self.clock.now_ms()
         rows: dict[str, ScanRow] = {}
         priced = 0
-        for m in self.catalog.universe_markets():
+        for i, m in enumerate(self.catalog.universe_markets()):
+            if i and i % chunk == 0:
+                yield
             bid, bq, ask, aq = self.top_of_book(m)
             secs = m.seconds_to_close(t0)
             chg = None
@@ -209,7 +232,9 @@ class ScannerService:
         arbs: list[ArbOpportunity] = []
         if self.arb_cfg.enabled:
             allow = frozenset(self.arb_cfg.exhaustive_allowlist)
-            for ev in self.catalog.events.values():
+            for j, ev in enumerate(list(self.catalog.events.values())):
+                if j and j % chunk == 0:
+                    yield
                 mkts = self.catalog.event_markets(ev.event_ticker)
                 if len(mkts) < 2:
                     continue
@@ -245,7 +270,9 @@ class ScannerService:
     def _tag(self, r: ScanRow) -> None:
         c = self.cfg
         score = c.w_liquidity * math.log10(1.0 + max(r.volume_24h, 0.0))
-        be = r.best_edge
+        mid = r.mid
+        live = mid is not None and 0.02 <= mid <= 0.98  # two-sided and not effectively decided
+        be = r.best_edge if live else None
         if be is not None and be >= c.min_edge_signal:
             r.signals.append("EDGE+" if (r.edge_buy or -1) >= (r.edge_sell or -1) else "EDGE-")
         if be is not None:
@@ -267,7 +294,7 @@ class ScannerService:
     async def run(self) -> None:
         while True:
             try:
-                snap = self.scan_once()
+                snap = await self.scan_async()
                 self.latest = snap
                 focus = [r.ticker for r in snap.rows]
                 arb_legs = [leg.ticker for a in snap.arbs for leg in a.legs]
