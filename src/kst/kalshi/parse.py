@@ -90,11 +90,13 @@ def parse_market(d: dict[str, Any], *, series_ticker: str | None = None, categor
 
 def update_market_stats(m: Market, d: dict[str, Any], ts_ms: int = 0) -> None:
     """Refresh top-of-book/stats from a Market REST object or a `ticker` WS message."""
-    bid = _p(d, "yes_bid_dollars")
-    ask = _p(d, "yes_ask_dollars")
-    # Kalshi reports 0 bid / $1 ask for an empty side.
-    m.yes_bid = bid if bid else None
-    m.yes_ask = ask if ask is not None and 0 < ask < PRICE_SCALE else None
+    # Kalshi reports 0 bid / $1 ask for an empty side. A message without the field leaves it unchanged.
+    if "yes_bid_dollars" in d:
+        bid = _p(d, "yes_bid_dollars")
+        m.yes_bid = bid if bid else None
+    if "yes_ask_dollars" in d:
+        ask = _p(d, "yes_ask_dollars")
+        m.yes_ask = ask if ask is not None and 0 < ask < PRICE_SCALE else None
     if "yes_bid_size_fp" in d:
         m.yes_bid_size = _q(d, "yes_bid_size_fp")
     if "yes_ask_size_fp" in d:

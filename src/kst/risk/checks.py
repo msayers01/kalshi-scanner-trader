@@ -57,6 +57,7 @@ class RiskContext:
     book_fresh: bool
     category: str = ""
     pos_qty: int = 0
+    resting_close_qty: int = 0  # Qty of live orders in this market that reduce the position
     market_exposure: int = 0  # micros, position + resting opening orders in this market
     market_resting_opening_qty: int = 0  # Qty of resting orders that would open in this market
     event_exposure: int = 0
@@ -74,6 +75,13 @@ class RiskContext:
     in_blackout: bool = False
     book_mid: float | None = None  # live (fresh) order-book mid, dollars
     own_live_orders: list[Order] = field(default_factory=list)  # all strategies, this market
+
+    @property
+    def eff_pos_qty(self) -> int:
+        """Position left once resting closing orders fill. Two exits that each "reduce" must not add up to
+        a flip that skips the entry checks."""
+        left = max(0, abs(self.pos_qty) - self.resting_close_qty)
+        return left if self.pos_qty > 0 else -left
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,9 +107,9 @@ def _usd(m: int) -> float:
 
 
 def engine_state_allows(p: OrderProposal, c: RiskContext) -> CheckResult | None:
-    if c.state is EngineState.KILLED and not (p.flatten and p.is_risk_reducing(c.pos_qty)):
+    if c.state is EngineState.KILLED and not (p.flatten and p.is_risk_reducing(c.eff_pos_qty)):
         return _fail("EngineStateAllows", "engine KILLED")
-    if c.state is EngineState.PAUSED and not p.is_risk_reducing(c.pos_qty):
+    if c.state is EngineState.PAUSED and not p.is_risk_reducing(c.eff_pos_qty):
         return _fail("EngineStateAllows", "engine PAUSED: only risk-reducing orders")
     return None
 
@@ -166,7 +174,7 @@ def max_order_size(p: OrderProposal, c: RiskContext) -> CheckResult | None:
 
 def order_rate(p: OrderProposal, c: RiskContext) -> CheckResult | None:
     cap = c.limits.max_orders_per_minute
-    if p.is_risk_reducing(c.pos_qty):
+    if p.is_risk_reducing(c.eff_pos_qty):
         cap *= 2  # exits keep working when entries hit the limit; 2× still stops a runaway loop
     if c.orders_last_minute >= cap:
         return _fail("OrderRate", f"{c.orders_last_minute} orders in the last minute")
@@ -186,7 +194,7 @@ def self_cross(p: OrderProposal, c: RiskContext) -> CheckResult | None:
 
 
 def sufficient_balance(p: OrderProposal, c: RiskContext) -> CheckResult | None:
-    need = p.added_exposure_micros(c.pos_qty)
+    need = p.added_exposure_micros(c.eff_pos_qty)
     if need and need > c.cash - c.cash_buffer:
         return _fail(
             "SufficientBalance", f"needs ${_usd(need):.2f}, available ${_usd(c.cash - c.cash_buffer):.2f}"
@@ -221,12 +229,12 @@ def min_time_to_close(p: OrderProposal, c: RiskContext) -> CheckResult | None:
 
 
 def max_position_per_market(p: OrderProposal, c: RiskContext) -> CheckResult | None:
-    after = abs(c.pos_qty) + c.market_resting_opening_qty + p.opening_qty(c.pos_qty)
+    after = abs(c.pos_qty) + c.market_resting_opening_qty + p.opening_qty(c.eff_pos_qty)
     if after > c.limits.max_position_contracts * 100:
         return _fail(
             "MaxPositionPerMarket", f"{after / 100:.0f} > {c.limits.max_position_contracts} contracts"
         )
-    exp = c.market_exposure + p.added_exposure_micros(c.pos_qty)
+    exp = c.market_exposure + p.added_exposure_micros(c.eff_pos_qty)
     if _usd(exp) > c.limits.max_exposure_per_market_usd:
         return _fail(
             "MaxPositionPerMarket",
@@ -236,7 +244,7 @@ def max_position_per_market(p: OrderProposal, c: RiskContext) -> CheckResult | N
 
 
 def max_exposure_per_event(p: OrderProposal, c: RiskContext) -> CheckResult | None:
-    exp = c.event_exposure + p.added_exposure_micros(c.pos_qty)
+    exp = c.event_exposure + p.added_exposure_micros(c.eff_pos_qty)
     if _usd(exp) > c.limits.max_exposure_per_event_usd:
         return _fail(
             "MaxExposurePerEvent", f"event exposure ${_usd(exp):.2f} > ${c.limits.max_exposure_per_event_usd}"
@@ -245,7 +253,7 @@ def max_exposure_per_event(p: OrderProposal, c: RiskContext) -> CheckResult | No
 
 
 def max_exposure_per_category(p: OrderProposal, c: RiskContext) -> CheckResult | None:
-    exp = c.category_exposure + p.added_exposure_micros(c.pos_qty)
+    exp = c.category_exposure + p.added_exposure_micros(c.eff_pos_qty)
     if _usd(exp) > c.limits.max_exposure_per_category_usd:
         return _fail(
             "MaxExposurePerCategory",
@@ -255,7 +263,7 @@ def max_exposure_per_category(p: OrderProposal, c: RiskContext) -> CheckResult |
 
 
 def max_total_exposure(p: OrderProposal, c: RiskContext) -> CheckResult | None:
-    exp = c.total_exposure + p.added_exposure_micros(c.pos_qty)
+    exp = c.total_exposure + p.added_exposure_micros(c.eff_pos_qty)
     if _usd(exp) > c.limits.max_total_exposure_usd:
         return _fail(
             "MaxTotalExposure", f"total exposure ${_usd(exp):.2f} > ${c.limits.max_total_exposure_usd}"
@@ -342,7 +350,7 @@ def run_checks(
         r = chk(p, c)
         if r is not None:
             return r
-    if not p.is_risk_reducing(c.pos_qty):
+    if not p.is_risk_reducing(c.eff_pos_qty):
         for chk in entry:
             r = chk(p, c)
             if r is not None:

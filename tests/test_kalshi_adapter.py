@@ -21,9 +21,11 @@ from kst.kalshi.parse import (
     parse_trade,
     parse_ws_delta,
     parse_ws_snapshot,
+    update_market_stats,
 )
 from kst.kalshi.ratelimit import KalshiRateLimiter
 from kst.kalshi.rest import KalshiApiError, KalshiRest
+from kst.marketdata.service import MarketDataService
 
 FIX = Path(__file__).parent / "fixtures"
 BASE = "https://api.test/trade-api/v2"
@@ -222,3 +224,65 @@ async def test_create_order_v2_body_and_auth() -> None:
     assert body["cancel_order_on_pause"] is True and body["self_trade_prevention_type"] == "taker_at_cross"
     assert req.headers["KALSHI-ACCESS-KEY"] == "kid"
     await rest.aclose()
+
+
+def test_ticker_message_without_quote_fields_keeps_top_of_book() -> None:
+    m = parse_market(json.loads((FIX / "market_btcd.json").read_text()))
+    m.yes_bid, m.yes_ask = 4000, 4200  # type: ignore[assignment]
+    update_market_stats(m, {"market_ticker": m.ticker, "volume_fp": "12.00"}, 1)
+    assert (m.yes_bid, m.yes_ask) == (4000, 4200)
+    update_market_stats(m, {"yes_bid_dollars": "0.0000", "yes_ask_dollars": "1.0000"}, 2)
+    assert m.yes_bid is None and m.yes_ask is None  # explicit empty sides still clear
+
+
+class _FakeWs:
+    connected = True
+
+    def set_focus(self, tickers: set[str]) -> None:
+        pass
+
+
+def _md_ws() -> MarketDataService:
+    from kst.config import Settings
+    from kst.core.bus import EventBus
+    from kst.core.clock import ManualClock
+    from kst.domain.fees import FeeModel
+    from kst.marketdata.catalog import MarketCatalog
+
+    s, bus, clock = Settings(), EventBus(), ManualClock()
+    md = MarketDataService(
+        s.marketdata, MarketCatalog(s.universe, FeeModel(), bus, clock), _client(), bus, clock
+    )
+    md.ws, md.mode = _FakeWs(), "ws"  # type: ignore[assignment]
+    md.on_ws_state(True, "connected")
+    return md
+
+
+def _snap(t: str) -> dict[str, object]:
+    return {
+        "type": "orderbook_snapshot",
+        "msg": {
+            "market_ticker": t,
+            "yes_dollars_fp": [["0.40", "5.00"]],
+            "no_dollars_fp": [["0.45", "5.00"]],
+        },
+    }
+
+
+def test_ws_books_leaving_focus_or_behind_a_seq_gap_are_stale() -> None:
+    md = _md_ws()
+    md.request_focus("scanner", ["A", "B"])
+    md._on_ws_snapshot(_snap("A"))
+    md._on_ws_snapshot(_snap("B"))
+    now = md.clock.now_ms()
+    assert md.is_fresh("A", now) and md.is_fresh("B", now)
+    md.request_focus("scanner", ["A"])  # B unsubscribed: no more deltas will arrive
+    assert md.is_fresh("A", now) and not md.is_fresh("B", now)
+    md.on_ws_gap("orderbook_delta")  # a delta was missed somewhere on the channel
+    assert not md.is_fresh("A", now)
+    md._on_ws_delta(
+        {"msg": {"market_ticker": "A", "price_dollars": "0.40", "delta_fp": "-5.00", "side": "yes"}}
+    )
+    assert md.books["A"].best_bid == 4000  # deltas are dropped until the fresh snapshot
+    md._on_ws_snapshot(_snap("A"))
+    assert md.is_fresh("A", now)

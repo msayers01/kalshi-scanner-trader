@@ -3,6 +3,7 @@ a passive take-profit quote at q̂ ± premium. No naive price stop-losses."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from kst.core.fixedpoint import PRICE_SCALE, Price, Qty, prob_to_price_ceil, prob_to_price_floor
@@ -36,11 +37,22 @@ def plan_exit(
     slot: str = "exit",
     max_qty: int | None = None,
     max_usd: float | None = None,
+    top: Callable[[BookSide], tuple[Price | None, int]] | None = None,
 ) -> ExitPlan:
-    """`max_qty`/`max_usd` are the per-order caps (risk.max_order_*): large positions exit in slices."""
+    """`max_qty`/`max_usd` are the per-order caps (risk.max_order_*): large positions exit in slices.
+
+    `top(side)` → (best price, Qty) to exit against; pass `StrategyContext.top` so live books (which hold our
+    own quotes) don't value or size the exit off our own orders. Defaults to the raw book.
+    """
     if pos_qty == 0:
         return ExitPlan(None, None, None, 0.0)
     n = abs(pos_qty)
+    if top is not None:
+        bid, bid_qty = top(BookSide.BID)
+        ask, ask_qty = top(BookSide.ASK)
+    else:
+        bid, bid_qty = book.best_bid, book.best_bid_qty
+        ask, ask_qty = book.best_ask, book.best_ask_qty
 
     def cap(side: BookSide, px: int, want: int) -> Qty:
         if max_qty is not None:
@@ -52,7 +64,6 @@ def plan_exit(
 
     if pos_qty > 0:  # long YES → exit by selling YES at the bid
         hold = q
-        bid = book.best_bid
         liq = (
             None
             if bid is None
@@ -63,7 +74,7 @@ def plan_exit(
                 ticker,
                 BookSide.ASK,
                 bid,
-                cap(BookSide.ASK, bid, min(n, book.qty_at_or_better(BookSide.BID, bid))),  # bids we sell into
+                cap(BookSide.ASK, bid, min(n, bid_qty)),  # bids we sell into
                 "ev_exit",
                 reduce_only=True,
                 expected_edge=liq - hold,
@@ -71,8 +82,9 @@ def plan_exit(
             return ExitPlan(take if take.qty > 0 else None, None, liq, hold)
         target = q + max(premium, fees.per_contract(q, is_taker=False) + rounding)
         px = grid.snap_up(prob_to_price_ceil(min(target, 0.9999)))
-        if px is not None and bid is not None and px <= bid:
-            px = grid.tick_above(bid)
+        raw_bid = book.best_bid  # post-only must clear every resting bid, our own included
+        if px is not None and raw_bid is not None and px <= raw_bid:
+            px = grid.tick_above(raw_bid)
         if px is None or (qn := cap(BookSide.ASK, px, n)) <= 0:
             return ExitPlan(None, None, liq, hold)
         return ExitPlan(
@@ -92,7 +104,6 @@ def plan_exit(
 
     # long NO (short YES) → exit by buying YES at the ask
     hold = 1.0 - q
-    ask = book.best_ask
     liq = (
         None
         if ask is None
@@ -103,7 +114,7 @@ def plan_exit(
             ticker,
             BookSide.BID,
             ask,
-            cap(BookSide.BID, ask, min(n, book.qty_at_or_better(BookSide.ASK, ask))),  # asks we buy from
+            cap(BookSide.BID, ask, min(n, ask_qty)),  # asks we buy from
             "ev_exit",
             reduce_only=True,
             expected_edge=liq - hold,
@@ -111,8 +122,9 @@ def plan_exit(
         return ExitPlan(take if take.qty > 0 else None, None, liq, hold)
     target = q - max(premium, fees.per_contract(q, is_taker=False) + rounding)
     px = grid.snap_down(prob_to_price_floor(max(target, 0.0001)))
-    if px is not None and ask is not None and px >= ask:
-        px = grid.tick_below(ask)
+    raw_ask = book.best_ask
+    if px is not None and raw_ask is not None and px >= raw_ask:
+        px = grid.tick_below(raw_ask)
     if px is None or (qn := cap(BookSide.BID, px, n)) <= 0:
         return ExitPlan(None, None, liq, hold)
     return ExitPlan(

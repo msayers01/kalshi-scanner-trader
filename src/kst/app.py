@@ -430,12 +430,14 @@ class Application:
             self.oms.restore_seen_fills(seen)
             self.portfolio.restore_seen_fills(seen)
 
-    async def _sync_exchange(self) -> None:
+    async def _sync_exchange(self, *, confirm: bool = True) -> None:
+        started_ms = self.clock.now_ms()
         snap = await self.broker.snapshot()
         for row in snap.positions:
             await self.catalog.ensure_market(self.rest, row["ticker"])
-        self.portfolio.sync_from_exchange(snap.balance_cents, snap.positions)
-        self.oms.adopt_open_orders(snap.open_orders)
+        self.portfolio.sync_from_exchange(snap.balance_cents, snap.positions, confirm=confirm)
+        # Orders placed while the snapshot was in flight may be missing from it: only prune older ones.
+        self.oms.adopt_open_orders(snap.open_orders, prune_before_ms=started_ms - 60_000)
 
     async def _initial_catalog(self) -> None:
         for attempt in range(3):
@@ -459,7 +461,7 @@ class Application:
         await self._restore()
         await self.broker.start()
         if self.mode.uses_exchange_orders:
-            await self._sync_exchange()
+            await self._sync_exchange(confirm=False)  # startup: the exchange is the only truth we have
         await self._initial_catalog()
         if s.feeds.crypto.enabled:
             await self.crypto_feed.seed_vol()

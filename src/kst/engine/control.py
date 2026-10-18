@@ -12,7 +12,7 @@ from kst.config import Settings
 from kst.core.bus import EventBus
 from kst.core.clock import Clock
 from kst.core.events import Alert, RiskLimitsChanged
-from kst.core.fixedpoint import PRICE_SCALE, Price, Qty, fmt_usd
+from kst.core.fixedpoint import MICROS_PER_DOLLAR, PRICE_SCALE, Price, Qty, fmt_usd
 from kst.core.logging import get_logger
 from kst.core.types import Actor, BookSide, EngineState, OrderStatus, TimeInForce
 from kst.domain.orders import Order, new_client_order_id
@@ -129,12 +129,17 @@ class ControlService:
         return out
 
     async def flatten(self, actor: Actor, who: str = "") -> dict[str, Any]:
-        """IOC exits for every position, at most `flatten_max_slippage` through the touch."""
+        """IOC exits for every position, at most `flatten_max_slippage` through the touch.
+
+        Resting orders in the market are cancelled first (a resting exit plus the flatten could flip the
+        position), and exits are sliced to the per-order caps so MaxOrderSize doesn't reject them.
+        """
         slip = int(self.settings.risk.flatten_max_slippage * PRICE_SCALE)
         results: list[dict[str, Any]] = []
         for pos in list(self.portfolio.positions.values()):
             if pos.qty == 0:
                 continue
+            await asyncio.gather(*(self.oms.cancel(o) for o in self.oms.live_orders(pos.ticker)))
             m = self.catalog.get(pos.ticker)
             self.md.request_focus("flatten", {p.ticker for p in self.portfolio.positions.values() if p.qty})
             book = self.md.book(pos.ticker)
@@ -150,27 +155,46 @@ class ControlService:
             else:  # buy YES from asks
                 side, touch = BookSide.BID, book.best_ask
                 limit = None if touch is None else m.grid.snap_down(min(touch + slip, m.grid.max_price))
-            if limit is None:
+            if limit is None or touch is None:
                 results.append({"ticker": pos.ticker, "ok": False, "reason": "no liquidity"})
                 continue
-            o = Order(
-                new_client_order_id("flatten"),
-                pos.ticker,
-                side,
-                Price(limit),
-                Qty(abs(pos.qty)),
-                tif=TimeInForce.IOC,
-                reduce_only=True,
-                strategy="flatten",
+            lim = self.risk.limits
+            per = max(limit if side is BookSide.BID else PRICE_SCALE - limit, 1)  # Price × Qty = micros
+            cap = min(
+                int(lim.max_order_contracts * 100),
+                int(lim.max_order_usd * MICROS_PER_DOLLAR) // per,
             )
-            res = await self.oms.submit(o)
+            cap = cap // 100 * 100 or cap  # whole contracts unless the caps allow less than one
+            todo = abs(pos.qty)
+            filled = 0
+            res = None
+            reason = ""
+            # Fixed total (never more than the position we started with), sent as capped IOC slices.
+            while todo > 0 and cap > 0:
+                o = Order(
+                    new_client_order_id("flatten"),
+                    pos.ticker,
+                    side,
+                    Price(limit),
+                    Qty(min(todo, cap)),
+                    tif=TimeInForce.IOC,
+                    reduce_only=True,
+                    strategy="flatten",
+                )
+                todo -= o.qty
+                # Fat-finger is measured from the touch: the slippage band is the operator's choice.
+                res = await self.oms.submit(o, reference_price=touch / PRICE_SCALE)
+                filled += o.filled
+                reason = res.detail or o.reject_reason
+                if not res.ok or (o.status.is_terminal and o.filled < o.qty):
+                    break  # rejected or out of liquidity inside the band: report, don't chase
             results.append(
                 {
                     "ticker": pos.ticker,
-                    "ok": res.ok,
-                    "filled": o.filled / 100,
-                    "remaining": o.remaining / 100,
-                    "reason": res.detail or o.reject_reason,
+                    "ok": res is not None and res.ok,
+                    "filled": filled / 100,
+                    "remaining": abs(pos.qty) / 100,
+                    "reason": reason if res is not None else "order caps too small",
                 }
             )
         self.md.request_focus("flatten", set())

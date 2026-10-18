@@ -124,6 +124,7 @@ class PortfolioService:
         self.positions: dict[str, Position] = {}
         self.cash = int(starting_cash_usd * MICROS_PER_DOLLAR)
         self._seen_fills: set[str] = set()
+        self._sync_mismatch: dict[str, tuple[int, int]] = {}  # ticker → (local qty, exchange qty) last sync
         today = trading_day(clock.now_ms(), trading_day_tz).isoformat()
         self._day = _Day(today, self.cash, self.cash)
         self._dirty = True
@@ -338,14 +339,28 @@ class PortfolioService:
 
     # ------------------------------------------------------------------ live sync
 
-    def sync_from_exchange(self, balance_cents: int | None, positions: list[dict[str, Any]]) -> None:
+    def sync_from_exchange(
+        self, balance_cents: int | None, positions: list[dict[str, Any]], *, confirm: bool = True
+    ) -> None:
+        """Adopt the exchange's balance and positions. With `confirm`, a position mismatch is adopted only
+        when the previous sync saw the same one: a fill can reach the positions endpoint before our WS
+        fill (or the reverse), and adopting it then would count that fill twice."""
         if balance_cents is not None:
             self.cash = balance_cents * 10_000
         seen = set()
+        mismatches: dict[str, tuple[int, int]] = {}
+
+        def confirmed(t: str, local: int, exchange: int) -> bool:
+            mismatches[t] = (local, exchange)
+            return not confirm or self._sync_mismatch.get(t) == (local, exchange)
+
         for row in positions:
             t, qty = row["ticker"], int(row["qty"])
             seen.add(t)
             pos = self.positions.get(t)
+            local = pos.qty if pos is not None else 0
+            if local != qty and not confirmed(t, local, qty):
+                continue
             if pos is None:
                 m = self.catalog.get(t)
                 pos = Position(
@@ -362,9 +377,10 @@ class PortfolioService:
                 exp = int(row.get("exposure", 0))
                 pos.open_cost = Micros(exp if qty >= 0 else PRICE_SCALE * -qty - exp)
         for t, pos in self.positions.items():
-            if t not in seen and pos.qty != 0:
+            if t not in seen and pos.qty != 0 and confirmed(t, pos.qty, 0):
                 log.warning("position_closed_on_exchange", ticker=t, local=pos.qty / 100)
                 pos.qty, pos.open_cost = Qty(0), Micros(0)
+        self._sync_mismatch = mismatches
         self._dirty = True
 
     # ------------------------------------------------------------------ summaries / day roll

@@ -113,3 +113,23 @@ def test_non_local_bind_requires_token(tmp_path: Path) -> None:
     app.settings.web.host = "0.0.0.0"
     with pytest.raises(RuntimeError, match="API_TOKEN"):
         create_app(app)
+
+
+async def test_cross_site_requests_cannot_drive_controls_without_a_token(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    transport = httpx.ASGITransport(app=create_app(app))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8787") as c:
+        # Any web page can POST to localhost, and a bodiless POST needs no CORS preflight.
+        evil = await c.post("/api/control/flatten", headers={"Origin": "https://evil.example"})
+        assert evil.status_code == 403
+        # DNS rebinding: Origin and Host both carry the attacker's name.
+        rebind = await c.post(
+            "/api/control/kill",
+            json={},
+            headers={"Origin": "http://evil.example:8787", "Host": "evil.example:8787"},
+        )
+        assert rebind.status_code == 403 and app.state.get() is EngineState.RUNNING
+        same = await c.post("/api/control/pause", json={}, headers={"Origin": "http://127.0.0.1:8787"})
+        dev = await c.post("/api/control/resume", headers={"Origin": "http://localhost:5173"})
+        cli = await c.post("/api/control/pause", json={})  # curl / scripts send no Origin
+        assert same.status_code == dev.status_code == cli.status_code == 200

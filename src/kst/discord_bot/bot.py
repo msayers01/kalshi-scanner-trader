@@ -79,10 +79,11 @@ class ControlPanel(discord.ui.View):
     )
     async def pause(self, interaction: discord.Interaction, _: discord.ui.Button[Any]) -> None:
         if await self.bot.authorized(interaction):
+            await interaction.response.defer(ephemeral=True, thinking=True)
             res = await self.bot.app.control.pause(
                 Actor.DISCORD, "discord button", who=str(interaction.user.id)
             )
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"⏸️ Paused (cancelled {res['cancelled_entries']} entry orders). Exits still managed.",
                 ephemeral=True,
             )
@@ -200,7 +201,7 @@ class KstBot(commands.Bot):
             await self.tree.sync(guild=guild)
         else:
             await self.tree.sync()
-        self.loop.create_task(self._notifier())
+        self._notifier_task = self.loop.create_task(self._notifier())  # keep a ref: tasks can be GC'd
 
     async def on_ready(self) -> None:
         log.info("discord_ready", user=str(self.user), guilds=len(self.guilds))
@@ -243,8 +244,10 @@ class KstBot(commands.Bot):
         @tree.command(name="pause", description="Stop new entries (exits continue)")
         async def pause(interaction: discord.Interaction) -> None:
             if await self.authorized(interaction):
+                # Cancelling entries can outlast Discord's 3 s reply window: acknowledge first.
+                await interaction.response.defer(ephemeral=True, thinking=True)
                 await app.control.pause(Actor.DISCORD, "slash /pause", who=str(interaction.user.id))
-                await interaction.response.send_message("⏸️ Paused.", ephemeral=True)
+                await interaction.followup.send("⏸️ Paused.", ephemeral=True)
 
         @tree.command(name="resume", description="Resume trading")
         async def resume(interaction: discord.Interaction) -> None:

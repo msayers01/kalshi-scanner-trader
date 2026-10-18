@@ -69,6 +69,7 @@ class RiskEngine:
         self.consecutive_losses = 0
         self._tripped: set[str] = set()  # breakers already fired today
         self.rejections: dict[str, int] = {}
+        self._breach_tasks: set[asyncio.Task[None]] = set()  # strong refs: an unreferenced task can be GC'd
 
     def bind(self, oms: OrderManager, portfolio: PortfolioService) -> None:
         self.oms = oms
@@ -140,6 +141,7 @@ class RiskEngine:
             here = pf.positions.get(p.ticker)
             pos_qty = here.qty if here else 0
         resting_open_qty = 0
+        resting_close_qty = 0
         live_here = []
         if oms is not None:
             for o in oms.live_orders():
@@ -153,6 +155,7 @@ class RiskEngine:
                 if o.ticker == p.ticker:
                     live_here.append(o)
                     resting_open_qty += prop.opening_qty(pq)
+                    resting_close_qty += o.remaining - prop.opening_qty(pq)
         ev_exp = cat_exp = 0
         for t, e in exposures.items():
             mk = self.catalog.get(t)
@@ -175,6 +178,7 @@ class RiskEngine:
             book_fresh=self.md.is_fresh(p.ticker, now),
             category=category,
             pos_qty=pos_qty,
+            resting_close_qty=resting_close_qty,
             market_exposure=exposures.get(p.ticker, 0),
             market_resting_opening_qty=resting_open_qty,
             event_exposure=ev_exp,
@@ -290,7 +294,9 @@ class RiskEngine:
             Alert(self.clock.now_ms(), "critical", f"Risk breaker: {name} → {action.upper()}", reason)
         )
         if self.on_breach is not None:
-            asyncio.get_running_loop().create_task(self.on_breach(action, f"{name}: {reason}"))
+            task = asyncio.get_running_loop().create_task(self.on_breach(action, f"{name}: {reason}"))
+            self._breach_tasks.add(task)
+            task.add_done_callback(self._breach_tasks.discard)
 
     def reset_breaker(self, name: str | None = None) -> None:
         if name is None:

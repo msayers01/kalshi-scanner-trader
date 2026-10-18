@@ -107,6 +107,9 @@ class MarketDataService:
         self._focus_requests[source] = set(wanted)
         new = set().union(*self._focus_requests.values()) if self._focus_requests else set()
         if new != self._focus:
+            # Books leaving the focus set stop receiving deltas: they must not keep reading as fresh.
+            for t in self._focus - new:
+                self._book_epoch.pop(t, None)
             self._focus = new
             for t in new:
                 self.books.setdefault(t, OrderBook(t))

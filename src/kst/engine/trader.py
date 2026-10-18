@@ -8,6 +8,7 @@ re-evaluates dirty managed/candidate markets on their *latest* state (and every 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,9 +16,9 @@ from kst.config import Settings
 from kst.core.bus import EventBus
 from kst.core.clock import Clock
 from kst.core.events import BookUpdated, TradePrinted
-from kst.core.fixedpoint import MICROS_PER_DOLLAR, PRICE_SCALE
+from kst.core.fixedpoint import MICROS_PER_DOLLAR, PRICE_SCALE, Price
 from kst.core.logging import get_logger
-from kst.core.types import EngineState, Mode
+from kst.core.types import BookSide, EngineState, Mode
 from kst.domain.orders import Decision
 from kst.engine.control import ControlService
 from kst.engine.state import EngineStateStore
@@ -110,7 +111,10 @@ class AutoTrader:
                 out.add(p.ticker)
         return out
 
-    def posterior(self, ticker: str) -> Posterior | None:
+    def posterior(
+        self, ticker: str, touch: Callable[[BookSide], Price | None] | None = None
+    ) -> Posterior | None:
+        """Model ⊕ market. Pass `StrategyContext.touch` so our own live quotes don't count as the market."""
         m = self.catalog.get(ticker)
         b = self.md.book(ticker)
         if m is None or b is None:
@@ -118,7 +122,7 @@ class AutoTrader:
         fv = self.resolver.fair_value(m, self.clock.now_ms())
         if fv is None:
             return None
-        bb, ba = b.best_bid, b.best_ask
+        bb, ba = (touch(BookSide.BID), touch(BookSide.ASK)) if touch else (b.best_bid, b.best_ask)
         return combine_with_market(
             fv,
             None if bb is None else bb / PRICE_SCALE,
@@ -218,7 +222,6 @@ class AutoTrader:
             # Never leave quotes resting on stale data.
             await self.oms.reconcile(strat.name, ticker, [], cancel_others=True)
             return
-        post = self.posterior(ticker)
         pos = self.portfolio.positions.get(ticker)
         summary = self.portfolio.summary()
         allow = state is EngineState.RUNNING and self.risk.can_enter(ticker)
@@ -227,7 +230,7 @@ class AutoTrader:
             market=m,
             book=book,
             fees=self.catalog.fees(m),
-            posterior=post,
+            posterior=None,
             position=pos if pos is not None and pos.qty else None,
             open_orders=self.oms.live_orders(ticker, strat.name),
             bankroll_usd=summary.equity / MICROS_PER_DOLLAR * self.s.risk.bankroll_fraction,
@@ -239,6 +242,7 @@ class AutoTrader:
             max_position_qty=int(self.risk.limits.max_position_contracts * 100),
             own_in_book=self.s.app.mode in (Mode.LIVE, Mode.DEMO),
         )
+        post = ctx.posterior = self.posterior(ticker, ctx.touch)
         d = strat.evaluate(ctx)
         if now - self._last_take.get(ticker, 0) < self.take_cooldown_ms:
             # Throttle repeat entry takes on the same (possibly not-yet-refreshed) book. Resting quotes are
@@ -252,12 +256,14 @@ class AutoTrader:
                 gated = "awaiting_llm" if v is None else f"llm_skip: {v.reason}"
                 d.takes = [t for t in d.takes if t.reduce_only]
                 d.quotes = [q for q in d.quotes if q.reduce_only_intent]
-        ref = post.q if post is not None else book.mid()
+        ref = post.q if post is not None else ctx.mid()
+        if d.manage_quotes:
+            # Quotes first: cancelling an unwanted resting exit/entry before a take keeps the two from
+            # stacking (e.g. an EV-exit take plus the take-profit quote it replaces).
+            await self.oms.reconcile(strat.name, ticker, d.quotes, reference_price=ref)
         for t in d.takes:
             self._last_take[ticker] = now
             await self.oms.take(t, strat.name, reference_price=ref)
-        if d.manage_quotes:
-            await self.oms.reconcile(strat.name, ticker, d.quotes, reference_price=ref)
         self.last_evals[ticker] = EvalRecord(
             ticker, strat.name, now, d.note, len(d.takes), len(d.quotes), gated
         )
