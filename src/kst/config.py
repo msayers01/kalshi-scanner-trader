@@ -91,9 +91,13 @@ class MarketDataCfg(BaseModel):
     book_depth: int = 25
     poll_markets_interval_s: float = 60.0  # REST mode: catalog+stats refresh cadence for the universe
     poll_books_interval_s: float = 3.0  # REST: refresh focus-set books (100 per request)
-    # REST: extra refresh of only the books open in the UI (≤ 5), so manual tickets price off a book at
-    # most this old. One request per interval; 0 disables. Not used with the WS (books stream there).
+    # REST: extra refresh of the books open in the UI (+ open positions, see below), so manual tickets and
+    # the live equity chart use books at most this old. One request per interval (≤ 100 books); 0 disables.
+    # Not used with the WS (books stream there).
     ui_book_interval_s: float = 1.0
+    # While a UI is connected, also refresh books of open positions on that loop (same single request), so
+    # marks — and the live equity chart — move within ~1 s instead of the 3 s focus poll.
+    ui_live_positions: bool = True
     ws_subscribe_ticker_all: bool = True
     record: bool = False  # write market data to data/recordings for replay
 
@@ -339,6 +343,9 @@ class RiskCfg(BaseModel):
 class EngineCfg(BaseModel):
     autotrade: bool = False  # first run: scanner + manual only. Flip after reviewing paper results.
     tick_s: float = 0.25
+    # Portfolio re-marks this often and publishes PortfolioUpdated when equity changed (plus a 1 s heartbeat).
+    # Lower = faster drawdown/daily-loss breakers and a smoother live equity chart; each publish is cheap.
+    equity_publish_ms: int = 250
     manage_manual_positions: bool = False  # let strategies exit positions they didn't open
     cancel_on_shutdown: bool = True  # live/demo: cancel strategy orders on a graceful shutdown
 
@@ -406,6 +413,9 @@ class WebCfg(BaseModel):
     )
     serve_ui: bool = True
     push_hz: float = 10.0  # max WS flush rate per client
+    # In-memory equity tick history for the chart's tick / second intervals (DB keeps 1-minute snapshots).
+    # ~1 point per equity change; lost on restart. No effect on trading.
+    equity_tape_hours: float = 24.0
 
 
 class PaperCfg(BaseModel):

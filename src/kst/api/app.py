@@ -156,18 +156,47 @@ def create_app(app: Application) -> FastAPI:
 
     @api.get("/api/equity", dependencies=read)
     async def equity(
-        range_: str = Query("1D", alias="range"), points: int = Query(400, ge=10, le=2000)
+        range_: str = Query("TODAY", alias="range"),
+        interval: str = Query("auto", max_length=10),
+        points: int = Query(1500, ge=10, le=5000),
     ) -> dict[str, Any]:
-        """Portfolio-value series for the chart: downsampled snapshots + the live equity as the last point."""
-        from kst.portfolio.history import RANGES, build_series, range_start
+        """Portfolio-value series for the chart.
 
-        if range_ not in RANGES:
-            raise HTTPException(422, f"range must be one of {', '.join(RANGES)}")
+        range: TODAY | 24H | 1W | 1M | 3M | 1Y | ALL. interval: tick | auto | <n>s | <n>m | <n>h | <n>d.
+        DB minute snapshots are merged with the in-memory tick tape; buckets are aligned to absolute time so
+        the UI can keep extending the newest one from live pushes. Each trading day's opening equity is
+        returned for the dashed baselines.
+        """
+        from kst.portfolio.history import (
+            RANGES,
+            build_series,
+            merge_sources,
+            normalize_range,
+            parse_interval,
+            range_start,
+        )
+
+        try:
+            r = normalize_range(range_)
+            parse_interval(interval)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        tz = app.settings.app.trading_day_tz
         now = app.clock.now_ms()
-        since = 0 if RANGES[range_] is None else range_start(range_, now, None)
-        rows = await app.repo.equity_points(since)
-        current = app.portfolio.summary().equity / 1e6
-        return build_series(range_, rows, now, current, points).to_dict()
+        since = 0 if RANGES[r] is None else range_start(r, now, None, tz)
+        db_rows = await app.repo.equity_points(since)
+        merged = merge_sources(db_rows, app.equity_tape.since(since))
+        s = app.portfolio.summary()
+        return build_series(
+            r,
+            merged,
+            now,
+            s.equity / 1e6,
+            tz=tz,
+            interval=interval,
+            max_points=points,
+            today_open=s.day_start_equity / 1e6,
+        ).to_dict()
 
     @api.get("/api/limits", dependencies=read)
     def limits() -> dict[str, Any]:

@@ -222,14 +222,21 @@ export interface Note {
 
 export type Limits = Record<string, number>;
 
-export type EquityRange = "1D" | "1W" | "1M" | "3M" | "1Y" | "ALL";
+export type EquityRange = "TODAY" | "24H" | "1W" | "1M" | "3M" | "1Y" | "ALL";
 
+// Mirrors src/kst/portfolio/history.py EquitySeries.to_dict().
 export interface EquitySeries {
   range: EquityRange;
+  interval: string; // as requested: tick | auto | <n>s|m|h|d
+  interval_ms: number | null; // as used (null = every tick)
+  interval_label: string;
+  align_offset_ms: number; // buckets start at floor((t + offset) / interval) * interval − offset
   start_ms: number;
   baseline: number | null; // equity at the start of the range (dollars)
   current: number | null;
   change: number | null;
   change_pct: number | null;
   points: [number, number][]; // [ts_ms, equity dollars], oldest first
+  days: { start_ms: number; open: number }[]; // each trading day's opening equity
+  note: string; // set when the requested interval was coarsened
 }

@@ -395,8 +395,11 @@ only gates new entries (section 13).
 - The UI header shows the connection dot, market-data age, and loop lag.
 - P&L is reported daily (Discord + `data/pnl/` + log) and on demand
   (`/pnl` in Discord, the UI, and `GET /api/pnl`).
-- Equity is snapshotted once a minute while the engine runs. `GET /api/equity?range=1D|1W|1M|3M|1Y|ALL`
-  serves it downsampled (`portfolio/history.py`) for the UI's portfolio chart.
+- Equity is published up to every `engine.equity_publish_ms` (250 ms) when it changes, kept at full
+  resolution for `web.equity_tape_hours` in memory (`EquityTape`), and snapshotted to the DB once a minute.
+  `GET /api/equity?range=TODAY|24H|1W|1M|3M|1Y|ALL&interval=tick|auto|<n>s|m|h|d` merges both, buckets on
+  timezone-aligned boundaries, and returns each trading day's opening equity (`portfolio/history.py`). The
+  UI chart extends the newest bucket from live WS pushes and colors the line against each day's open.
 
 ---
 

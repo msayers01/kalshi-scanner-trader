@@ -15,7 +15,13 @@ import uvicorn
 from kst.config import Settings
 from kst.core.bus import EventBus
 from kst.core.clock import Clock, SystemClock
-from kst.core.events import CatalogRefreshed, DailyReport, FeedHealth, MarketStatusChanged
+from kst.core.events import (
+    CatalogRefreshed,
+    DailyReport,
+    FeedHealth,
+    MarketStatusChanged,
+    PortfolioUpdated,
+)
 from kst.core.logging import get_logger
 from kst.core.supervisor import Supervisor
 from kst.core.types import Actor, EngineState, Mode
@@ -42,6 +48,7 @@ from kst.marketdata.recording_state import catalog_snapshot
 from kst.marketdata.service import MarketDataService
 from kst.persistence.db import Database
 from kst.persistence.repo import Repository
+from kst.portfolio.history import HOUR_MS, EquityTape
 from kst.portfolio.reports import write_ledger
 from kst.portfolio.service import PortfolioService
 from kst.pricing.calibration import CalibratedPriorModel, CalibrationSet
@@ -279,6 +286,9 @@ class Application:
             on_entry_fill=self.risk.on_entry_fill,
             markets_entered=lambda: len(self.risk.entered_today),
         )
+        # High-resolution equity for the chart (the DB keeps one snapshot a minute).
+        self.equity_tape = EquityTape(int(s.web.equity_tape_hours * HOUR_MS))
+        self.bus.subscribe(PortfolioUpdated, self._record_equity)
         if self.mode.uses_exchange_orders:
             og = s.risk.order_group.contracts_limit if s.risk.order_group.enabled else None
             self.broker: Broker = LiveBroker(
@@ -346,6 +356,9 @@ class Application:
         self.bus.subscribe(DailyReport, self._on_daily_report)
 
     # ------------------------------------------------------------------ helpers
+
+    def _record_equity(self, e: PortfolioUpdated) -> None:
+        self.equity_tape.append(e.ts_ms, e.summary.equity / 1e6)
 
     def _on_daily_report(self, e: DailyReport) -> None:
         try:
@@ -480,7 +493,11 @@ class Application:
         if s.feeds.weather.enabled:
             sup.add("weather", self.weather_feed.run)
         sup.add("scanner", self.scanner.run, critical=True)
-        sup.add("portfolio", self.portfolio.run, critical=True)
+        sup.add(
+            "portfolio",
+            lambda: self.portfolio.run(tick_ms=max(50, s.engine.equity_publish_ms)),
+            critical=True,
+        )
         sup.add("risk_monitor", self._risk_loop, critical=True)
         sup.add("llm_gate", self.gate.run)
         sup.add("loop_lag", self._lag_loop)

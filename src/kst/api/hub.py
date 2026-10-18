@@ -70,7 +70,7 @@ class WsHub:
         bus = app.bus
         bus.subscribe(ScanUpdated, lambda _: self._dirty.add("scan"))
         bus.subscribe(PortfolioUpdated, lambda _: self._dirty.add("portfolio"))
-        bus.subscribe(PositionChanged, lambda _: self._dirty.add("positions"))
+        bus.subscribe(PositionChanged, self._on_position)
         bus.subscribe(OrderUpdated, lambda _: self._dirty.add("orders"))
         bus.subscribe(EngineStateChanged, lambda _: self._dirty.add("status"))
         bus.subscribe(AutotradeChanged, lambda _: self._dirty.add("status"))
@@ -132,6 +132,7 @@ class WsHub:
         await ws.accept()
         c = _Client(ws)
         self.clients.add(c)
+        self._refresh_live_focus()
         sender = asyncio.create_task(self._sender(c))
         try:
             c.offer(self.snapshot())
@@ -170,11 +171,20 @@ class WsHub:
     def _refresh_ui_focus(self) -> None:
         books = {c.book for c in self.clients if c.book}
         self.app.md.request_focus("ui", books)
-        self.app.md.request_focus(self.app.md.UI_LIVE, books)
+        self._refresh_live_focus()
+
+    def _on_position(self, _: PositionChanged) -> None:
+        self._dirty.add("positions")
+        if self.clients:
+            self._refresh_live_focus()  # a new or closed position joins/leaves the fast refresh
 
     def _refresh_live_focus(self) -> None:
-        """Books open in a UI right now get the fast REST refresh (marketdata.ui_book_interval_s)."""
-        self.app.md.request_focus(self.app.md.UI_LIVE, {c.book for c in self.clients if c.book})
+        """Books open in a UI right now — and, while any UI is connected, open positions (so marks and the
+        live equity chart move every ~1 s) — get the fast REST refresh (marketdata.ui_book_interval_s)."""
+        live = {c.book for c in self.clients if c.book}
+        if self.clients and self.app.settings.marketdata.ui_live_positions:
+            live |= {t for t, p in self.app.portfolio.positions.items() if p.qty}
+        self.app.md.request_focus(self.app.md.UI_LIVE, live)
 
     async def _sender(self, c: _Client) -> None:
         try:
