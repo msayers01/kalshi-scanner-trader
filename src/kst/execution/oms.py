@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 
 from kst.core.bus import EventBus
@@ -27,7 +27,7 @@ from kst.domain.orders import (
     new_client_order_id,
     strategy_from_client_order_id,
 )
-from kst.execution.broker import Broker
+from kst.execution.broker import Broker, OrderSubmissionUnknownError
 from kst.risk.checks import CheckResult, OrderProposal
 from kst.risk.engine import RiskEngine
 
@@ -63,6 +63,8 @@ class OrderManager:
         self.reject_backoff_ms = reject_backoff_ms
         self._slot_backoff: dict[tuple[str, str, str], int] = {}
         self.unknown_fills = 0
+        self._seen_fills: set[str] = set()
+        self.new_client_id = new_client_order_id
         broker.bind(self)
 
     # ------------------------------------------------------------------ queries
@@ -81,9 +83,14 @@ class OrderManager:
 
     # ------------------------------------------------------------------ placement
 
+    def restore_seen_fills(self, fill_ids: Iterable[str]) -> None:
+        self._seen_fills.update(fill_ids)
+
     async def submit(
         self, order: Order, *, reference_price: float | None = None, manual: bool = False, replaces: str = ""
     ) -> CheckResult:
+        if order.client_order_id in self.orders:
+            return CheckResult(False, "DuplicateClientOrderId", "Client order ID is already tracked")
         prop = OrderProposal(
             ticker=order.ticker,
             side=order.side,
@@ -117,6 +124,11 @@ class OrderManager:
         self.bus.publish(OrderUpdated(now, order))
         try:
             await self.broker.place(order)
+        except OrderSubmissionUnknownError as exc:
+            self.bus.publish(
+                Alert(now, "critical", "Order acceptance unknown", f"{order.client_order_id}: {exc}")
+            )
+            return CheckResult(False, "BrokerUnknown", str(exc))
         except Exception as exc:
             log.exception("broker_place_failed", coid=order.client_order_id)
             self.on_broker_order(order.client_order_id, OrderStatus.REJECTED, reason=f"broker_error: {exc}")
@@ -125,7 +137,7 @@ class OrderManager:
 
     async def take(self, intent: TakeIntent, strategy: str, *, reference_price: float | None = None) -> Order:
         o = Order(
-            client_order_id=new_client_order_id(strategy),
+            client_order_id=self.new_client_id(strategy),
             ticker=intent.ticker,
             side=intent.side,
             price=intent.limit,
@@ -134,6 +146,7 @@ class OrderManager:
             reduce_only=intent.reduce_only,
             strategy=strategy,
             basket_id=intent.basket_id,
+            expected_edge=intent.expected_edge,
         )
         await self.submit(o, reference_price=reference_price)
         log.info(
@@ -194,7 +207,7 @@ class OrderManager:
         self, strategy: str, t: QuoteTarget, reference_price: float | None, replaces: str = ""
     ) -> None:
         o = Order(
-            client_order_id=new_client_order_id(strategy),
+            client_order_id=self.new_client_id(strategy),
             ticker=t.ticker,
             side=t.side,
             price=t.price,
@@ -203,6 +216,7 @@ class OrderManager:
             post_only=True,
             strategy=strategy,
             slot=t.slot,
+            expected_edge=t.expected_edge,
         )
         await self.submit(o, reference_price=reference_price, replaces=replaces)
 
@@ -228,10 +242,13 @@ class OrderManager:
                 return
             exp = self.clock.now_ms() // 1000 + self.order_ttl_s
             if await self.broker.amend(o, Price(t.price), new_total, expiration_ts=exp):
+                o.expected_edge = t.expected_edge
                 o.updated_ms = self.clock.now_ms()
                 self.bus.publish(OrderUpdated(o.updated_ms, o))
                 return
         await self.cancel(o)
+        if o.is_live:
+            return  # cancellation was not confirmed; replacing would duplicate exposure
         await self._place_quote(strategy, t, reference_price, replaces=o.client_order_id)
 
     # ------------------------------------------------------------------ cancels
@@ -260,15 +277,13 @@ class OrderManager:
     async def cancel_all(self) -> int:
         """Exchange-wide cancel (kill switch) + mark every local live order canceled. Returns #local orders."""
         n = len(self.live_orders())
-        try:
-            await self.broker.cancel_all()
-        finally:
-            now = self.clock.now_ms()
-            for o in self.live_orders():
-                o.status = OrderStatus.CANCELED
-                o.updated_ms = now
-                self.risk.on_order_done(o.ticker, o.client_order_id, o.filled)
-                self.bus.publish(OrderUpdated(now, o))
+        await self.broker.cancel_all()  # retain local exposure if exchange cancellation fails
+        now = self.clock.now_ms()
+        for o in self.live_orders():
+            o.status = OrderStatus.CANCELED
+            o.updated_ms = now
+            self.risk.on_order_done(o.ticker, o.client_order_id, o.filled)
+            self.bus.publish(OrderUpdated(now, o))
         return n
 
     # ------------------------------------------------------------------ BrokerListener
@@ -298,6 +313,10 @@ class OrderManager:
             self.bus.publish(OrderUpdated(now, o))
 
     def on_broker_fill(self, fill: Fill) -> None:
+        if fill.fill_id:
+            if fill.fill_id in self._seen_fills:
+                return
+            self._seen_fills.add(fill.fill_id)
         coid = fill.client_order_id or self._ex_to_coid.get(fill.exchange_order_id, "")
         o = self.orders.get(coid)
         if o is None:
@@ -328,6 +347,9 @@ class OrderManager:
     def adopt_open_orders(self, orders: list[Order]) -> None:
         """Startup/reconcile: track exchange orders we don't know (e.g. after a restart)."""
         for o in orders:
+            existing = self.orders.get(o.client_order_id)
+            if existing is not None and existing.status is OrderStatus.PENDING_NEW:
+                self.on_broker_order(o.client_order_id, o.status, exchange_id=o.exchange_order_id)
             if o.client_order_id not in self.orders:
                 o.strategy = strategy_from_client_order_id(o.client_order_id)
                 self.orders[o.client_order_id] = o

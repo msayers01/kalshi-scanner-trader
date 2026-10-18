@@ -129,6 +129,7 @@ model-only trading without an LLM, set `llm.mode: off`.
 | Daily loss breaker paused trading | It stays paused for the day unless you resume. Exits are still managed. |
 | Market data down | In WS mode, the dead-man's switch cancels all resting orders after `risk.ws_down_cancel_after_s` and pauses. |
 | Process crashed with live orders | GTC orders expire after `risk.order_ttl_s` (exchange-side) and cancel on exchange pauses. On restart the engine reconciles positions and open orders from Kalshi. |
+| Database writer failed | Critical failure kills trading immediately. Check `health.db`, repair storage and let the writer restart before explicitly resuming. A failed kill checkpoint reports `persisted: false`; do not assume it survives a restart. See `RELIABILITY.md`. |
 
 **Logs.** `data/logs/kst.jsonl` holds structured JSON lines. Try `jq 'select(.event=="risk_rejected")'`.
 

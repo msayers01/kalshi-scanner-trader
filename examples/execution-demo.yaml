@@ -1,0 +1,36 @@
+# Overlay after config/default.yaml. Use demo-only credentials in .env or the environment.
+# Keep this separate from the paper UI and its database. Autotrade stays disabled.
+app:
+  mode: demo
+  data_dir: data/execution-demo
+kalshi:
+  env: demo
+  rest_url: https://external-api.demo.kalshi.co/trade-api/v2
+  ws_url: wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2
+web:
+  port: 8788
+discord:
+  enabled: false
+llm:
+  mode: "off"
+feeds:
+  crypto:
+    enabled: false
+  weather:
+    enabled: false
+engine:
+  autotrade: false
+  manage_manual_positions: false
+risk:
+  order_ttl_s: 60
+  order_group:
+    enabled: true
+    contracts_limit: 2
+  limits:
+    max_order_contracts: 1
+    max_order_usd: 1
+    max_position_contracts: 2
+    max_exposure_per_market_usd: 2
+    max_exposure_per_event_usd: 4
+    max_total_exposure_usd: 5
+    daily_loss_limit_usd: 2

@@ -83,9 +83,9 @@
 | Pre-trade risk | **Chain of responsibility** | Each check is a small pure function, so checks are easy to add, test, and report ("rejected by `MaxExposurePerEvent`"). |
 | Orders and engine state | **Explicit state machines** | Illegal transitions raise errors. `RUNNING → PAUSED → KILLED` is persisted, so a restart after a kill stays killed. |
 | Commands from UI and Discord | **Command service (CQRS-lite)** | Writes go through `ControlService`, which validates, audits, and executes. Reads come from in-memory projections. The web UI and Discord share exactly the same semantics. |
-| Exchange vs paper (vs replay) | **Adapter + factory** | The `Broker` protocol has `LiveBroker` and `PaperBroker`. Market-data sources are WS or REST polling. Strategy code is identical in all modes. Replay (`PaperBroker` + `ManualClock` over recordings) is **(roadmap)**. |
-| Persistence | **Repository + async write-behind queue** | DB writes never block the trading loop. |
-| Long-running tasks | **Supervisor** | Crashed tasks restart with backoff. Crashes of *critical* tasks escalate to PAUSE or KILL. |
+| Exchange vs paper (vs replay) | **Adapter + factory** | The `Broker` protocol has `LiveBroker` and `PaperBroker`. Market-data sources are WS, REST polling, or offline recorded inputs. Replay drives the production scanner/strategies/risk/OMS with `PaperBroker` + `ManualClock`; see `docs/REPLAY.md` for assumptions. |
+| Persistence | **Repository + async write-behind queue** | Immutable queued snapshots and serialized atomic batches; explicit kill checkpoints await durable commit. Disk I/O uses the async DB adapter. |
+| Long-running tasks | **Supervisor** | Crashed tasks restart with backoff. Critical worker failures immediately invoke KILL before retry; DB writer is critical. |
 | Wiring | **Composition root** (`app.py`), manual dependency injection | No DI framework magic. One file shows how the system is assembled. |
 
 ---
@@ -158,13 +158,14 @@ src/kst/
 ├── strategies/    Strategy ABC, router, Kelly sizing, EV-based exits, structural_arb, edge_taker, market_maker
 ├── risk/          RiskLimits (runtime-editable), pre-trade check chain, RiskEngine (breakers, daily counters)
 ├── execution/     Broker protocol, PaperBroker, LiveBroker, OrderManager (declarative reconciliation)
-├── portfolio/     PortfolioService (positions, cash, equity, realized/unrealized), daily P&L reports + ledger
+├── portfolio/     PortfolioService (positions, cash, equity, realized/unrealized), daily P&L reports + ledger, FIFO paper execution scorecard (docs/SCORECARD.md)
 ├── llm/           decision-packet builder, providers (OpenAI-compatible, Anthropic), LLMGate (cache, budget, batching)
 ├── engine/        AutoTrader (orchestration loop), ControlService (commands), EngineState store
 ├── persistence/   SQLAlchemy tables, async DB, write-behind repository
 ├── api/           app (FastAPI routes, bearer auth, static UI), hub (WebSocket topic coalescing), serialize
 ├── discord_bot/   bot (slash commands, persistent control-panel view, notifier), formatting (embeds)
-├── backtest/      (roadmap) replay of recorded sessions through the same pipeline; empty package today
+├── backtest/      offline recording reader, replay driver, performance metrics, parameter grids
+├── calibration/   probability/weather candidate jobs, historical acquisition, archive pairing, diagnostics
 ├── config.py      typed settings tree (YAML + env)
 ├── app.py         composition root: build_app(settings) → Application (start/stop)
 └── cli.py         Typer CLI
@@ -272,7 +273,7 @@ Button/slash command or HTTP POST /api/control/kill
 | `paper` (default) | live public data (WS if keys, else REST polling) | `PaperBroker` simulated against live books and trades | `data/kst_paper.db` | Safe default. Validate strategies here first. |
 | `demo` | Kalshi demo env | `LiveBroker` → demo API | `data/kst_demo.db` | Demo keys. Exercises the real order lifecycle. |
 | `live` | Kalshi prod | `LiveBroker` → prod API | `data/kst_live.db` | Requires `mode: live` in config **and** the `--i-understand-live-trading` CLI flag. |
-| `replay` **(roadmap)** | recorded JSONL.gz | `PaperBroker` + `ManualClock` | `data/kst_replay.db` | Not implemented yet. The recorder already writes the input files. |
+| `replay` | recorded JSONL(.gz) | `PaperBroker` + `ManualClock` | `data/replays/<run>/variant-NNN/kst_replay.db` | `kst replay`; isolated runs, no network feeds or exchange calls, LLM and fitted calibration disabled. |
 
 The **scanner-only** run (`kst scan` or `engine.autotrade: false`) starts
 everything except order submission. The UI trade ticket still works for manual
@@ -312,7 +313,9 @@ orders in paper, demo, or live mode.
 
 ## 11. Persistence model
 
-SQLite with one file per mode, WAL enabled. Tables (`persistence/tables.py`):
+SQLite with one file per mode, WAL and `synchronous=FULL`. Repository batches,
+kill checkpoints and paper restart deduplication are described in `docs/RELIABILITY.md`.
+Tables (`persistence/tables.py`):
 
 | Table | Content |
 |---|---|
@@ -412,7 +415,9 @@ only gates new entries (section 13).
   never crossed after a snapshot, `Price × Qty` exact).
 - **Adapters** use `respx`-mocked REST, recorded JSON fixtures
   (`tests/fixtures/`), and signature verification of the auth signer against a
-  public key. The WS client has no fake-server test yet **(roadmap)**.
+  public key. The WS client has real loopback-server tests for subscriptions,
+  gaps, reconnect and shutdown (`tests/test_kalshi_ws.py`). LiveBroker validation
+  and pending demo evidence are described in `docs/EXECUTION_VALIDATION.md`.
 - **Integration.** The `Harness` fixture (`tests/conftest.py`) wires a full
   paper engine with no network: catalog, books, risk, OMS, `PaperBroker`,
   portfolio, and ControlService (`tests/test_trading.py`). FastAPI routes are
@@ -435,8 +440,9 @@ only gates new entries (section 13).
 - **Unauthenticated catalog.** Without API keys, heavy `/markets` pages are
   throttled, so the universe is limited to markets closing within
   `universe.max_hours_to_close` (24 h by default). See `docs/KALSHI_API_NOTES.md`.
-- **No backtester yet.** The only validation path today is paper trading, so
-  model parameters are uncalibrated defaults. See `docs/ROADMAP.md`.
+- **Replay coverage.** Offline backtesting is available, but requires recorded point-in-time
+  metadata and model inputs. Missing history cannot be reconstructed from today's exchange state.
+  Model parameters remain uncalibrated defaults until validated. See `docs/REPLAY.md`.
 - **Sports, politics, and economics** have no quant model in v0.1. They are
   tradable only via the calibrated prior + LLM gate (maker-only). See
   `docs/ROADMAP.md` for planned models: economic nowcasts and sports win

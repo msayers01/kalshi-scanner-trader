@@ -81,6 +81,7 @@ class Order:
     created_ms: int = 0
     updated_ms: int = 0
     reject_reason: str = ""
+    expected_edge: float | None = None  # net $/contract at the current limit; analytics only
 
     @property
     def remaining(self) -> Qty:

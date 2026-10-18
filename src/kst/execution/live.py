@@ -8,20 +8,24 @@ Missed WS fills are recovered by periodic REST reconciliation (deduped by fill i
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import replace
 from typing import Any
+
+import httpx
 
 from kst.core.clock import Clock
 from kst.core.fixedpoint import Price, Qty, qty_from_str
 from kst.core.logging import get_logger
 from kst.core.types import OrderStatus, TimeInForce
 from kst.domain.orders import Order
-from kst.execution.broker import BrokerListener, BrokerSnapshot
+from kst.execution.broker import BrokerListener, BrokerSnapshot, OrderSubmissionUnknownError
 from kst.kalshi.parse import order_status, parse_fill, parse_order, parse_position
 from kst.kalshi.rest import KalshiApiError, KalshiRest
 from kst.kalshi.ws import KalshiWs
 
 log = get_logger(__name__)
+_IOC_FILL_DELAYS = (0.3, 0.7, 1.5, 3.0)
 
 
 class LiveBroker:
@@ -45,6 +49,7 @@ class LiveBroker:
         self._ex_to_coid: dict[str, str] = {}
         self._seen_fills: set[str] = set()
         self._last_fill_poll_s = 0
+        self._ioc_tasks: set[asyncio.Task[None]] = set()
 
     def bind(self, listener: BrokerListener) -> None:
         self._listener = listener
@@ -63,16 +68,24 @@ class LiveBroker:
             for ch in ("fill", "user_orders", "market_positions"):
                 self.ws.want_channel(ch)
         if self.order_group_limit:
-            try:
-                res = await self.rest.create_order_group(self.order_group_limit)
-                self.order_group_id = res.get("order_group_id")
-                log.info("order_group_created", id=self.order_group_id, limit=self.order_group_limit)
-            except Exception:
-                log.exception("order_group_create_failed")
+            res = await self.rest.create_order_group(self.order_group_limit)
+            self.order_group_id = res.get("order_group_id")
+            if not self.order_group_id:
+                raise RuntimeError("Configured order group was not created; refusing to trade")
+            log.info("order_group_created", id=self.order_group_id, limit=self.order_group_limit)
         self._last_fill_poll_s = self.clock.now_ms() // 1000 - 60
 
     async def stop(self) -> None:
-        return None
+        tasks = list(self._ioc_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._ioc_tasks.clear()
+
+    def _ioc_done(self, task: asyncio.Task[None]) -> None:
+        self._ioc_tasks.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            log.error("ioc_finalize_failed", error=str(exc))
 
     # ------------------------------------------------------------------ orders
 
@@ -96,18 +109,29 @@ class LiveBroker:
                 order_group_id=self.order_group_id,
             )
         except KalshiApiError as exc:
-            if exc.is_conflict:
-                log.warning("order_duplicate_client_id", coid=order.client_order_id)
-                return
+            if exc.is_conflict or exc.status >= 500:
+                raise OrderSubmissionUnknownError(
+                    f"Create returned {exc.status}; retain order pending WS/REST reconciliation"
+                ) from exc
             self.listener.on_broker_order(
                 order.client_order_id, OrderStatus.REJECTED, reason=f"{exc.code}: {exc.message}"
             )
             return
+        except httpx.TransportError as exc:
+            raise OrderSubmissionUnknownError(
+                "Create transport failed; exchange acceptance is unknown"
+            ) from exc
         ex_id = res.get("order_id")
-        if ex_id:
-            self._ex_to_coid[ex_id] = order.client_order_id
-        remaining = qty_from_str(res.get("remaining_count", "0"))
-        filled = qty_from_str(res.get("fill_count", "0"))
+        if not ex_id:
+            raise OrderSubmissionUnknownError(
+                "Create response omitted order_id; exchange acceptance is unknown"
+            )
+        self._ex_to_coid[ex_id] = order.client_order_id
+        try:
+            remaining = qty_from_str(res.get("remaining_count", "0"))
+            filled = qty_from_str(res.get("fill_count", "0"))
+        except (ValueError, TypeError) as exc:
+            raise OrderSubmissionUnknownError("Create response has invalid fill/remaining counts") from exc
         # Accepted. Fills (immediate or later) arrive via WS `fill` / REST reconciliation and complete the order.
         self.listener.on_broker_order(order.client_order_id, OrderStatus.RESTING, exchange_id=ex_id)
         if order.tif is not TimeInForce.GTC:
@@ -116,11 +140,13 @@ class LiveBroker:
                     order.client_order_id, OrderStatus.CANCELED, reason="ioc_unfilled"
                 )
             else:
-                asyncio.get_running_loop().create_task(self._finalize_ioc(order, filled, remaining))
+                task = asyncio.create_task(self._finalize_ioc(order, filled, remaining))
+                self._ioc_tasks.add(task)
+                task.add_done_callback(self._ioc_done)
 
     async def _finalize_ioc(self, order: Order, filled: int, remaining: int) -> None:
         """Wait for the IOC's fills to arrive (WS, else REST) before closing out the remainder."""
-        for delay in (0.3, 0.7, 1.5, 3.0):
+        for delay in _IOC_FILL_DELAYS:
             if order.filled >= filled:
                 break
             await asyncio.sleep(delay)
@@ -130,6 +156,7 @@ class LiveBroker:
             log.warning(
                 "ioc_fills_missing", coid=order.client_order_id, expected=filled / 100, got=order.filled / 100
             )
+            return  # keep exposure reserved; missing fills must not look like an unfilled IOC
         if remaining > 0 or order.filled < order.qty:
             self.listener.on_broker_order(order.client_order_id, OrderStatus.CANCELED, reason="ioc_remainder")
 
@@ -149,7 +176,7 @@ class LiveBroker:
         if not order.exchange_order_id:
             return False
         try:
-            await self.rest.amend_order(
+            res = await self.rest.amend_order(
                 order.exchange_order_id,
                 ticker=order.ticker,
                 side=order.side,
@@ -161,6 +188,9 @@ class LiveBroker:
             log.warning("amend_failed", coid=order.client_order_id, error=str(exc))
             return False
         order.price, order.qty = price, qty
+        if ex_id := res.get("order_id"):
+            self._ex_to_coid[ex_id] = order.client_order_id
+            self.listener.on_broker_order(order.client_order_id, order.status, exchange_id=ex_id)
         if expiration_ts:
             order.expiration_ts = expiration_ts
         return True
@@ -184,6 +214,11 @@ class LiveBroker:
 
     def _emit_fill(self, raw: dict[str, Any]) -> None:
         f = parse_fill(raw)
+        # WS identifies a match by trade_id; REST additionally has a different fill_id. Use the
+        # order+trade pair on both paths (one trade may have two of our orders as counterparties).
+        if raw.get("trade_id") and f.exchange_order_id:
+            key = f"{f.exchange_order_id}:{raw['trade_id']}"
+            f = replace(f, fill_id=hashlib.sha256(key.encode()).hexdigest())
         if not f.fill_id or f.fill_id in self._seen_fills:
             return
         self._seen_fills.add(f.fill_id)
@@ -201,6 +236,8 @@ class LiveBroker:
         coid = body.get("client_order_id") or self._ex_to_coid.get(ex_id, "")
         if not coid:
             return
+        if ex_id:
+            self._ex_to_coid[ex_id] = coid
         status = order_status(body.get("status"))
         if status is OrderStatus.FILLED:
             return  # completion is driven by fills

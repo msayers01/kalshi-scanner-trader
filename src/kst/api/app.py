@@ -146,6 +146,14 @@ def create_app(app: Application) -> FastAPI:
             "rejections": app.risk.rejections,
         }
 
+    @api.get("/api/scorecard", dependencies=read)
+    async def scorecard() -> dict[str, Any]:
+        from kst.portfolio.scorecard import paper_scorecard
+
+        if app.mode.value not in ("paper", "replay"):
+            raise HTTPException(409, "Scorecard requires paper or replay mode")
+        return await paper_scorecard(app.repo, app.clock.now_ms(), app.mode.value)
+
     @api.get("/api/llm", dependencies=read)
     def llm() -> dict[str, Any]:
         return {"status": app.gate.status(), "verdicts": [v.to_dict() for v in app.gate.verdicts.values()]}

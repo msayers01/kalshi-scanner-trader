@@ -109,6 +109,11 @@ and `side` are deprecated. Public trades have `taker_outcome_side` and
 - `GET /portfolio/fills` returns `fill_id`, `order_id`, `ticker`,
   `outcome_side`, `book_side`, `count_fp`, `yes_price_dollars`, `is_taker`,
   `fee_cost` (dollars string), and `created_time`.
+  It also carries `trade_id`, which is the identifier in WS fill messages. These
+  may differ: LiveBroker deduplicates with an internal SHA-256 key of `order_id:trade_id`
+  across both sources when available. Pairing with order ID preserves both fills
+  if we are on both sides of a trade. See [REST fills](https://docs.kalshi.com/api-reference/portfolio/get-fills)
+  and [WS fills](https://docs.kalshi.com/websockets/user-fills).
 - `GET /portfolio/settlements` returns `market_result`, `yes_count_fp`,
   `no_count_fp`, costs, `revenue` (cents), and `fee_cost`.
 
@@ -205,6 +210,22 @@ subscribed to too much.
   exhaustive.
 - `GET /series` returns all ~15k series in one response, with category,
   `fee_type`, `fee_multiplier`, and frequency.
+
+## Calibration history collection
+
+Public calibration acquisition reads both recent `GET /markets?status=settled&series_ticker=...`
+and archived `GET /historical/markets?series_ticker=...`, deduplicating ticker overlaps. Historical
+listing's series/event/ticker filters are mutually exclusive, so no unsupported settlement-time
+filter is sent there. API documentation identifies `settlement_ts` on archived market objects.
+The tool applies final-result and as-of checks locally.
+
+Recent candles use `/series/{series_ticker}/markets/{ticker}/candlesticks`; archived candles use
+`/historical/markets/{ticker}/candlesticks`. Both take Unix-second `start_ts`, `end_ts`, and
+`period_interval`; calibration uses 1 minute. Archived YES bid/ask OHLC fields use dollar strings.
+Only candles whose end time is at/before the configured horizon are used. 404s near an archive
+handoff retry the other candle endpoint. See [historical storage](https://docs.kalshi.com/getting_started/historical_data),
+[market filters](https://docs.kalshi.com/api-reference/historical/get-historical-markets), and
+[archived candles](https://docs.kalshi.com/api-reference/historical/get-historical-market-candlesticks).
 
 ## Domain-specific
 

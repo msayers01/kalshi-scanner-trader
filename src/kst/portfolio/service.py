@@ -133,6 +133,9 @@ class PortfolioService:
 
     # ------------------------------------------------------------------ state persistence (paper)
 
+    def restore_seen_fills(self, fill_ids: set[str]) -> None:
+        self._seen_fills.update(fill_ids)
+
     def state(self) -> dict[str, Any]:
         return {
             "cash": self.cash,
@@ -327,7 +330,9 @@ class PortfolioService:
             qty=qty / 100,
             pnl=eff.realized / MICROS_PER_DOLLAR,
         )
-        self.bus.publish(MarketSettled(self.clock.now_ms(), ticker, result, qty, eff.realized))
+        self.bus.publish(
+            MarketSettled(self.clock.now_ms(), ticker, result, qty, eff.realized, settlement_price)
+        )
         self.bus.publish(PositionChanged(self.clock.now_ms(), pos))
         self._save()
 

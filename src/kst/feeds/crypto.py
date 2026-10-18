@@ -66,7 +66,7 @@ class CryptoFeed:
     def _emit(self, index_id: str, value: float, ts_ms: int, source: str) -> None:
         self.store.on_price(index_id, ts_ms, value, source)
         if self.recorder:
-            self.recorder.ref(ts_ms, index_id, value, source)
+            self.recorder.ref(ts_ms, index_id, value, source, received_ms=self.clock.now_ms())
         last = self._last_pub.get(index_id, 0)
         if ts_ms - last >= 1000:  # bus/UI at ≤1 Hz per index
             self._last_pub[index_id] = ts_ms
@@ -100,6 +100,8 @@ class CryptoFeed:
                 closes = [float(x[4]) for x in rows]
                 st = self.store.get(idx)
                 st.vol.seed_from_closes(closes, 60.0)
+                if self.recorder:
+                    self.recorder.seed(self.clock.now_ms(), idx, closes, 60.0)
                 if self.source == "coinbase" and rows:
                     self._emit(idx, closes[-1], int(rows[-1][0]) * 1000, "coinbase")
                 log.info(

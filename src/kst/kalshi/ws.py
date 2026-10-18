@@ -14,7 +14,7 @@ import asyncio
 import contextlib
 import itertools
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 import orjson
@@ -54,6 +54,8 @@ class KalshiWs:
         self._subscribed_focus: dict[str, set[str]] = {c: set() for c in MARKET_CHANNELS}
         self._pending: dict[int, str] = {}  # cmd id → channel
         self._last_seq: dict[int, int] = {}
+        self._invalid_sids: set[int] = set()  # quarantined until a fresh subscription replaces them
+        self._tasks: set[asyncio.Task[None]] = set()
         self.connected = False
         self.last_msg_ms = 0
         self.messages = 0
@@ -71,7 +73,7 @@ class KalshiWs:
     def set_focus(self, tickers: set[str]) -> None:
         self._focus = set(tickers)
         if self.connected:
-            asyncio.get_running_loop().create_task(self._sync_focus())
+            self._spawn(self._sync_focus())
 
     @property
     def focus(self) -> set[str]:
@@ -101,7 +103,12 @@ class KalshiWs:
                 raise
             except Exception as exc:
                 log.warning("kalshi_ws_disconnected", error=f"{type(exc).__name__}: {exc}")
-            self._on_disconnected("disconnected")
+            finally:
+                self._on_disconnected("disconnected")
+                tasks = list(self._tasks)
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30.0)
 
@@ -111,6 +118,7 @@ class KalshiWs:
         self._sid_channel.clear()
         self._channel_sid.clear()
         self._last_seq.clear()
+        self._invalid_sids.clear()
         self._pending.clear()
         self._subscribed_focus = {c: set() for c in MARKET_CHANNELS}
         log.info("kalshi_ws_connected", url=self.url)
@@ -130,6 +138,16 @@ class KalshiWs:
                 await self._ws.close()
 
     # ------------------------------------------------------------------ commands
+
+    def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(work)
+        self._tasks.add(task)
+        task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task[None]) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            log.warning("kalshi_ws_command_failed", error=str(exc))
 
     async def _send(self, cmd: str, params: dict[str, Any], channel: str = "") -> int:
         if self._ws is None:
@@ -182,6 +200,7 @@ class KalshiWs:
                     {"sids": [sid], "market_tickers": sorted(rem), "action": "delete_markets"},
                 )
             elif rem and not want:
+                self._invalid_sids.add(sid)
                 await self._send("unsubscribe", {"sids": [sid]})
                 self._channel_sid.pop(ch, None)
                 self._sid_channel.pop(sid, None)
@@ -191,6 +210,7 @@ class KalshiWs:
         """Drop and recreate a channel subscription (e.g. after an orderbook seq gap → fresh snapshots)."""
         sid = self._channel_sid.pop(channel, None)
         if sid is not None:
+            self._invalid_sids.add(sid)
             self._sid_channel.pop(sid, None)
             self._last_seq.pop(sid, None)
             await self._send("unsubscribe", {"sids": [sid]})
@@ -220,8 +240,11 @@ class KalshiWs:
             ch, sid = body.get("channel") or self._pending.get(msg.get("id", -1), ""), body.get("sid")
             self._pending.pop(msg.get("id", -1), None)
             if sid is not None and ch:
+                self._invalid_sids.discard(sid)
                 self._sid_channel[sid] = ch
                 self._channel_sid[ch] = sid
+                if ch in MARKET_CHANNELS:
+                    self._spawn(self._sync_focus())  # focus may have changed while subscribe was pending
             return
         if mtype == "error":
             self._pending.pop(msg.get("id", -1), None)
@@ -232,16 +255,19 @@ class KalshiWs:
             )
             return
         sid, seq = msg.get("sid"), msg.get("seq")
+        if sid is not None and sid in self._invalid_sids:
+            return
         if sid is not None and seq is not None:
             last = self._last_seq.get(sid)
             if last is not None and seq != last + 1:
                 ch = self._sid_channel.get(sid, "")
                 log.warning("kalshi_ws_seq_gap", sid=sid, channel=ch, expected=last + 1, got=seq)
                 self._last_seq.pop(sid, None)
+                self._invalid_sids.add(sid)
                 if self.on_gap and ch:
                     self.on_gap(ch)
                 if ch:
-                    asyncio.get_running_loop().create_task(self.resubscribe(ch))
+                    self._spawn(self.resubscribe(ch))
                 return
             self._last_seq[sid] = seq
         handler = self.handlers.get(mtype)

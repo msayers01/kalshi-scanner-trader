@@ -116,6 +116,29 @@ web:
 paper:
   starting_balance_usd: 1000
 
+replay:
+  warmup_s: 0                # historical input warmup before strategy orders; no network vol seeding
+  equity_sample_s: 60        # regular equity/return interval used for replay Sharpe
+
+calibration_tools:
+  horizon_h: 1
+  max_quote_age_s: 300
+  max_spread: 0.20
+  holdout_fraction: 0.2
+  min_train_samples: 200
+  min_holdout_samples: 50
+  min_train_events: 20
+  min_holdout_events: 10
+  l2: 0.01
+  max_markets: 1000
+  weather_min_train_days: 60
+  weather_min_holdout_days: 20
+  weather_min_members: 10
+  weather_max_lead_h: 24
+  weather_max_bias_f: 10
+  weather_min_inflation: 0.25
+  weather_max_inflation: 5
+
 fees:
   taker_coef: 0.07
   maker_ratio: 0.25

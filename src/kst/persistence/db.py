@@ -14,7 +14,8 @@ from kst.persistence.tables import Base
 def _sqlite_pragmas(dbapi_conn: Any, _: Any) -> None:
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
-    cur.execute("PRAGMA synchronous=NORMAL")
+    # Kill acknowledgements and committed checkpoints must survive an OS crash in WAL mode.
+    cur.execute("PRAGMA synchronous=FULL")
     cur.execute("PRAGMA foreign_keys=ON")
     cur.close()
 

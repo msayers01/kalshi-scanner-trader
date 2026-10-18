@@ -137,6 +137,11 @@ class MarketDataService:
             self._ws_epoch += 1
         self.bus.publish(FeedHealth(self.clock.now_ms(), "kalshi_ws", connected, detail))
 
+    def on_ws_gap(self, channel: str) -> None:
+        if channel == "orderbook_delta":
+            # Sequence numbers span the subscription, so every book on it needs a fresh snapshot.
+            self._book_epoch.clear()
+
     def _on_ws_snapshot(self, msg: dict[str, Any]) -> None:
         body = msg["msg"]
         t = body["market_ticker"]
@@ -146,7 +151,7 @@ class MarketDataService:
         b.apply_snapshot(bids, asks, ts, int(msg.get("seq") or 0))
         self._book_epoch[t] = self._ws_epoch
         if self.recorder:
-            self.recorder.book(ts, t, bids, asks)
+            self.recorder.book(ts, t, bids, asks, received_ms=self.clock.now_ms())
         self.bus.publish(BookUpdated(ts, t))
 
     def _on_ws_delta(self, msg: dict[str, Any]) -> None:
@@ -159,7 +164,7 @@ class MarketDataService:
         ts = int(body.get("ts_ms") or msg.get("sending_ts_ms") or self.clock.now_ms())
         b.apply_delta(side, price, delta, ts, int(msg.get("seq") or 0))
         if self.recorder:
-            self.recorder.delta(ts, t, side.value, price, delta)
+            self.recorder.delta(ts, t, side.value, price, delta, received_ms=self.clock.now_ms())
         self.bus.publish(BookUpdated(ts, t))
 
     def _on_ws_ticker(self, msg: dict[str, Any]) -> None:
@@ -169,12 +174,14 @@ class MarketDataService:
             return
         ts = int(body.get("ts_ms") or self.clock.now_ms())
         update_market_stats(m, body, ts)
+        if self.recorder:
+            self.recorder.ticker(ts, m.ticker, body, received_ms=self.clock.now_ms())
         self.bus.publish(TopOfBookUpdated(ts, m.ticker))
 
     def _on_ws_trade(self, msg: dict[str, Any]) -> None:
         t, price, qty, taker, ts = parse_trade(msg["msg"])
         if self.recorder:
-            self.recorder.trade(ts, t, price, qty, taker.value)
+            self.recorder.trade(ts, t, price, qty, taker.value, received_ms=self.clock.now_ms())
         self.bus.publish(TradePrinted(ts or self.clock.now_ms(), t, price, qty, taker))
 
     def _on_ws_lifecycle(self, msg: dict[str, Any]) -> None:
@@ -265,7 +272,9 @@ class MarketDataService:
                     newest = max(newest, ts // 1000)
                     if t in self._focus:
                         if self.recorder:
-                            self.recorder.trade(ts, t, price, qty, taker.value)
+                            self.recorder.trade(
+                                ts, t, price, qty, taker.value, received_ms=self.clock.now_ms()
+                            )
                         self.bus.publish(TradePrinted(ts, t, price, qty, taker))
                     if n >= 3000:
                         break

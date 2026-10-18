@@ -254,6 +254,203 @@ def report(config: ConfigOpt = None, mode: ModeOpt = None, days: int = 14) -> No
     asyncio.run(main())
 
 
+@cli.command()
+def scorecard(config: ConfigOpt = None) -> None:
+    """Print the lifetime paper-trading scorecard as JSON (works while the UI runs)."""
+    s = _settings(config, Mode.PAPER)
+
+    async def main() -> None:
+        from kst.core.bus import EventBus
+        from kst.core.clock import SystemClock
+        from kst.persistence.db import Database
+        from kst.persistence.repo import Repository
+        from kst.portfolio.scorecard import paper_scorecard
+
+        clock = SystemClock()
+        repo = Repository(Database(s.db_path), EventBus(), clock)
+        try:
+            await repo.db.init()
+            typer.echo(json.dumps(await paper_scorecard(repo, clock.now_ms()), indent=2))
+        finally:
+            await repo.db.close()
+
+    asyncio.run(main())
+
+
+@cli.command("replay")
+def replay_command(
+    recordings: Annotated[
+        list[str], typer.Argument(help="Recording paths or quoted globs (.jsonl.gz or .jsonl)")
+    ],
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="New output directory; never overwrites a previous run"),
+    ] = None,
+    config: ConfigOpt = None,
+    sweep: Annotated[
+        list[str] | None,
+        typer.Option("--sweep", help="Repeatable parameter grid, e.g. z=0.5,1 or kelly=0.1,0.25"),
+    ] = None,
+    sensitivity: Annotated[
+        bool, typer.Option("--sensitivity", help="Also compare base, 2x and 5x maker queue-ahead assumptions")
+    ] = False,
+    warmup_seconds: Annotated[
+        float | None,
+        typer.Option("--warmup-seconds", min=0, help="Ingest inputs without strategy orders during warmup"),
+    ] = None,
+) -> None:
+    """Offline backtest using recorded data, ManualClock and PaperBroker; never contacts the exchange."""
+    from uuid import uuid4
+
+    from kst.backtest.recordings import expand_paths
+    from kst.backtest.replay import run_replays
+
+    try:
+        s = load_settings(*(config or DEFAULT_CONFIG_FILES)).model_copy(deep=True)
+        if warmup_seconds is not None:
+            s.replay.warmup_s = warmup_seconds
+        paths = expand_paths(recordings)
+        target = output or s.data_dir / "replays" / f"run-{uuid4().hex[:12]}"
+        # Keep trading-loop logs separate from machine-readable stdout.
+        configure_logging("WARNING")
+        result = asyncio.run(run_replays(s, paths, target, sweep or [], sensitivity))
+        typer.echo(json.dumps({"output": str(target.resolve()), **result}, indent=2))
+    except (ValueError, OSError) as exc:
+        typer.secho(f"Replay failed: {exc}", fg="red", err=True)
+        raise typer.Exit(2) from exc
+
+
+@cli.command("calibrate")
+def calibrate_command(
+    inputs: Annotated[
+        list[Path] | None, typer.Option("--input", help="Repeatable normalized market CSV/JSONL input")
+    ] = None,
+    series: Annotated[
+        list[str] | None,
+        typer.Option("--series", help="Repeatable series ticker for bounded public history download"),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output", "-o", help="New candidate directory; active calibration is never overwritten"
+        ),
+    ] = None,
+    config: ConfigOpt = None,
+    as_of_ms: Annotated[
+        int | None, typer.Option("--as-of-ms", min=1, help="Outcome availability cutoff; default is now")
+    ] = None,
+    max_markets: Annotated[int | None, typer.Option("--max-markets", min=1, max=10000)] = None,
+) -> None:
+    """Fit and validate market probability calibration; save a candidate and reliability plots."""
+    from uuid import uuid4
+
+    from kst.calibration.artifacts import write_job
+    from kst.calibration.collect import collect_markets
+    from kst.calibration.data import MarketSample, read_samples
+    from kst.core.clock import SystemClock
+    from kst.kalshi.rest import KalshiRest
+
+    try:
+        if bool(inputs) == bool(series):
+            raise ValueError("Choose either --input samples or --series history download")
+        s = load_settings(*(config or DEFAULT_CONFIG_FILES)).model_copy(deep=True)
+        if max_markets is not None:
+            s.calibration_tools.max_markets = max_markets
+        now = as_of_ms or SystemClock().now_ms()
+        target = output or s.data_dir / "calibrations" / f"probability-{uuid4().hex[:12]}"
+        if target.exists():
+            raise ValueError(f"Output directory already exists: {target}")
+        configure_logging("WARNING")
+        acquisition, evidence = None, None
+        if inputs:
+            samples, sources, duplicates = read_samples(inputs, MarketSample)
+            acquisition = {"exact_duplicates_removed": duplicates}
+        else:
+
+            async def download() -> tuple[list[MarketSample], dict[str, Any], list[dict[str, Any]]]:
+                # Public reads only: no signer, key parsing, account or order requests.
+                rest = KalshiRest(s.kalshi.rest_url)
+                try:
+                    return await collect_markets(rest, series or [], s.calibration_tools, now)
+                finally:
+                    await rest.aclose()
+
+            samples, acquisition, evidence = asyncio.run(download())
+            sources = [{"api": s.kalshi.rest_url, "series": series, "retrieved_ms": SystemClock().now_ms()}]
+        result = write_job(s, samples, sources, target, now, acquisition=acquisition, evidence=evidence)
+        typer.echo(json.dumps(result, indent=2))
+    except (ValueError, OSError, RuntimeError, httpx.HTTPError) as exc:
+        typer.secho(f"Calibration failed: {exc}", fg="red", err=True)
+        raise typer.Exit(2) from exc
+
+
+@cli.command("calibrate-weather")
+def calibrate_weather_command(
+    inputs: Annotated[
+        list[Path] | None,
+        typer.Option("--input", help="Repeatable paired final-high/ensemble JSONL or CSV input"),
+    ] = None,
+    recordings: Annotated[
+        list[str] | None,
+        typer.Option("--recordings", help="Repeatable recording path/glob with pre-day ensembles"),
+    ] = None,
+    observations: Annotated[
+        list[Path] | None,
+        typer.Option("--observations", help="Final station/day high CSV/JSONL for archive pairing"),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="New candidate directory for weather YAML and diagnostics"),
+    ] = None,
+    config: ConfigOpt = None,
+    as_of_ms: Annotated[int | None, typer.Option("--as-of-ms", min=1)] = None,
+) -> None:
+    """Fit station bias and ensemble spread against final daily reports; save a candidate YAML."""
+    import hashlib
+    from uuid import uuid4
+
+    from kst.backtest.recordings import expand_paths
+    from kst.calibration.archive import pair_archive
+    from kst.calibration.artifacts import write_job
+    from kst.calibration.data import WeatherSample, read_samples
+    from kst.core.clock import SystemClock
+
+    acquisition: dict[str, Any]
+    sources: list[dict[str, Any]]
+    try:
+        if (inputs and (recordings or observations)) or (not inputs and not (recordings and observations)):
+            raise ValueError("Choose --input paired samples OR both --recordings and --observations")
+        s = load_settings(*(config or DEFAULT_CONFIG_FILES))
+        now = as_of_ms or SystemClock().now_ms()
+        target = output or s.data_dir / "calibrations" / f"weather-{uuid4().hex[:12]}"
+        if inputs:
+            samples, sources, duplicates = read_samples(inputs, WeatherSample)
+            acquisition = {"exact_duplicates_removed": duplicates}
+        else:
+            paths = expand_paths(recordings or [])
+
+            def fingerprints() -> list[dict[str, str]]:
+                result = []
+                for path in paths:
+                    with path.open("rb") as stream:
+                        result.append(
+                            {"path": str(path), "sha256": hashlib.file_digest(stream, "sha256").hexdigest()}
+                        )
+                return result
+
+            sources = fingerprints()
+            samples, acquisition = pair_archive(s, paths, observations or [])
+            if sources != fingerprints():
+                raise ValueError("Recordings changed during pairing; use completed archive files")
+            sources.extend(acquisition["observation_sources"])
+        configure_logging("WARNING")
+        result = write_job(s, samples, sources, target, now, weather=True, acquisition=acquisition)
+        typer.echo(json.dumps(result, indent=2))
+    except (ValueError, OSError, RuntimeError) as exc:
+        typer.secho(f"Weather calibration failed: {exc}", fg="red", err=True)
+        raise typer.Exit(2) from exc
+
+
 def _banner(s: Settings, scan_only: bool = False) -> None:
     color = {"paper": "cyan", "demo": "yellow", "live": "red"}.get(s.app.mode.value, "white")
     typer.secho(

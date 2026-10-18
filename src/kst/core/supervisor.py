@@ -1,8 +1,8 @@
 """Supervisor for long-running asyncio tasks.
 
 Each task is a coroutine factory. Non-critical tasks are restarted with exponential backoff; when a
-*critical* task exhausts its restarts the supervisor invokes `on_critical_failure` (wired to
-ControlService.kill by the composition root).
+*critical* task fails the supervisor immediately invokes `on_critical_failure` (wired to
+ControlService.kill by the composition root), then retries the worker with backoff.
 """
 
 from __future__ import annotations
@@ -45,6 +45,8 @@ class Supervisor:
         self._specs[name] = TaskSpec(name=name, factory=factory, critical=critical, max_restarts=max_restarts)
 
     def start(self) -> None:
+        if any(s.task is not None for s in self._specs.values()) or self._stopping:
+            raise RuntimeError("Supervisor is already started or stopped")
         for spec in self._specs.values():
             spec.task = asyncio.create_task(self._run(spec), name=f"sup:{spec.name}")
 
@@ -57,18 +59,26 @@ class Supervisor:
                 if self._stopping:
                     return
                 log.warning("task_exited", task=spec.name)
+                spec.last_error = "Worker returned unexpectedly"
             except asyncio.CancelledError:
-                spec.running = False
-                raise
+                if self._stopping:
+                    raise
+                spec.last_error = "Worker was cancelled unexpectedly"
             except Exception as exc:
                 spec.last_error = f"{type(exc).__name__}: {exc}"
                 log.exception("task_crashed", task=spec.name, restarts=spec.restarts)
-            spec.running = False
+            finally:
+                spec.running = False
+            if not spec.last_error:
+                spec.last_error = "Worker returned unexpectedly"
+            if spec.critical and self._on_critical_failure is not None:
+                try:
+                    await self._on_critical_failure(spec.name, spec.last_error)
+                except Exception:
+                    log.exception("critical_failure_handler_failed", task=spec.name)
             spec.restarts += 1
             if spec.restarts > spec.max_restarts:
                 log.error("task_gave_up", task=spec.name, critical=spec.critical)
-                if spec.critical and self._on_critical_failure is not None:
-                    await self._on_critical_failure(spec.name, spec.last_error)
                 return
             await asyncio.sleep(delay)
             delay = min(delay * 2, spec.backoff_max_s)
@@ -90,5 +100,11 @@ class Supervisor:
         for t in tasks:
             t.cancel()
         if tasks:
-            with contextlib.suppress(Exception):
-                await asyncio.wait(tasks, timeout=grace_s)
+            done, pending = await asyncio.wait(tasks, timeout=grace_s)
+            for task in done:
+                if not task.cancelled():
+                    with contextlib.suppress(Exception):
+                        task.result()  # consume worker errors; don't leave unobserved task exceptions
+            if pending:
+                names = ", ".join(sorted(t.get_name() for t in pending))
+                raise TimeoutError(f"Workers did not stop within {grace_s}s: {names}")

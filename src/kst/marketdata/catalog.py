@@ -82,7 +82,7 @@ class MarketCatalog:
         )
 
     def universe_markets(self) -> list[Market]:
-        return [m for t in self.universe if (m := self.markets.get(t)) is not None]
+        return [m for t in sorted(self.universe) if (m := self.markets.get(t)) is not None]
 
     # ------------------------------------------------------------------ filtering
 
