@@ -44,6 +44,7 @@ class EdgeTaker(Strategy):
                 rounding=ctx.rounding,
                 max_qty=ctx.max_order_qty,
                 max_usd=ctx.max_order_usd,
+                top=ctx.top,
             )
             if ex.take is not None:
                 d.takes.append(ex.take)
@@ -53,7 +54,7 @@ class EdgeTaker(Strategy):
 
         if not ctx.allow_entries:
             return d
-        mid = ctx.book.mid()
+        mid = ctx.mid()
         fv = post.fv
         if fv is not None and mid is not None and abs(fv.p - mid) > self.cfg.max_disagreement:
             d.note = f"disagree model={fv.p:.3f} mid={mid:.3f}"  # likelier a model/data error than free money

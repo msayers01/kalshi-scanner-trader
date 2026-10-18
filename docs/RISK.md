@@ -25,7 +25,10 @@ engine stays killed and alerts.
 
 Two chains run in order: `ALWAYS` (every order) and `ENTRY_ONLY` (marked ★).
 An order is "risk-reducing" if it shrinks `|position|` in its market without
-flipping the sign. Risk-reducing orders skip the ★ checks.
+flipping the sign. Risk-reducing orders skip the ★ checks. Live orders that
+already reduce the position count against it first: with +10 YES and a resting
+10-lot sell, a second 10-lot sell is an *entry* (it would flip to NO if both
+filled).
 
 **Arb basket legs** (`basket_id` set) also skip `PriceBand`,
 `DailyNewMarketLimit`, and `MaxOpenPositions`, because a hedged basket is one
@@ -93,10 +96,12 @@ entry takes but never cancels resting quotes.
 
 1. Persist `KILLED`.
 2. `cancel_all` (exchange-wide).
-3. If `flatten`, then for every position send an IOC exit at the touch,
-   walking at most `risk.flatten_max_slippage` (default $0.05) from the
-   touch. Positions that cannot be exited inside the band are reported, not
-   chased.
+3. If `flatten`, then for every position cancel its resting orders and send
+   IOC exits at the touch, walking at most `risk.flatten_max_slippage`
+   (default $0.05) from the touch. Exits are sliced to the per-order caps
+   (`max_order_contracts`, `max_order_usd`), and `FatFinger` measures them
+   against the touch, not the mid, so wide markets can still be flattened.
+   Positions that cannot be exited inside the band are reported, not chased.
 4. Audit and notify.
 
 The flatten button requires a second confirmation in both the UI and Discord.

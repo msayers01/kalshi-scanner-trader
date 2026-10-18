@@ -72,10 +72,11 @@ class MarketMaker(Strategy):
         m, book = ctx.market, ctx.book
         tkr = m.ticker
         st = self._st.setdefault(tkr, _MMState())
-        fair = ctx.posterior.q if ctx.posterior is not None and ctx.posterior.ok else book.microprice()
+        # Own-quote-free book views: live books hold our quotes, which must not move our own fair value or σ.
+        fair = ctx.posterior.q if ctx.posterior is not None and ctx.posterior.ok else ctx.microprice()
         if fair is None or not 0.0 < fair < 1.0:
             return Decision(note="no fair")
-        mid = book.mid()
+        mid = ctx.mid()
         if mid is not None and self._update_vol(st, logit(mid), ctx.now_ms):
             st.jump_until_ms = ctx.now_ms + 30_000
         d = Decision()
@@ -100,6 +101,7 @@ class MarketMaker(Strategy):
                     rounding=ctx.rounding,
                     max_qty=ctx.max_order_qty,
                     max_usd=ctx.max_order_usd,
+                    top=ctx.top,
                 )
                 if ex.quote is not None:
                     d.quotes.append(ex.quote)

@@ -13,7 +13,7 @@ from kst.domain.fees import FeeModel
 from kst.domain.market import Market
 from kst.domain.orderbook import OrderBook
 from kst.domain.positions import Position
-from kst.llm.gate import LLMGate, state_bucket
+from kst.llm.gate import LLMGate, Verdict, state_bucket
 from kst.llm.packet import Candidate, build_packet, parse_reply
 from kst.llm.providers import LLMResult
 from kst.pricing.base import FairValue, Posterior
@@ -282,3 +282,42 @@ def test_maker_entry_does_not_chase_own_quote() -> None:
     d = EdgeTaker(EdgeTakerCfg(entry_style="maker")).evaluate(ctx)
     bids = [q for q in d.quotes if q.side is BookSide.BID]
     assert bids and bids[0].price == 4000  # stays one tick above the *other* best bid, not 41¢
+
+
+def test_exit_values_liquidation_without_our_own_bid() -> None:
+    """Live: our own 65¢ bid is the best bid. Exiting into it is impossible (self-cross), so it must not make
+    selling look better than holding."""
+    from kst.domain.orders import Order
+
+    book = _book([(6500, 1000), (6000, 5000)], [(6800, 5000)])
+    own = Order("kst-et-x", "M", BookSide.BID, Price(6500), Qty(1000), slot="entry_bid")
+    ctx = _ctx(0.62, 0.005, book, pos=1000)
+    ctx.open_orders, ctx.own_in_book = [own], True
+    raw = plan_exit("M", 1000, 0.62, 0.005, book, FEES, _market().grid)
+    assert raw.take is not None  # raw book: 65¢ − fee ≥ 62¢ hold
+    ex = plan_exit("M", 1000, 0.62, 0.005, book, FEES, _market().grid, top=ctx.top)
+    assert ex.take is None and ex.quote is not None  # real bid 60¢ < hold: rest a take-profit instead
+    assert ex.quote.price > 6500  # post-only quote still clears our own bid
+
+
+def test_market_maker_fair_ignores_own_quotes() -> None:
+    """Without a model the MM quotes around the microprice; our own size must not tilt it."""
+    from kst.domain.orders import Order
+
+    book = _book([(4000, 10_000)], [(4200, 100)])
+    ctx = _ctx(0.5, 0.01, book)
+    ctx.posterior = None
+    ctx.own_in_book = True
+    ctx.open_orders = [Order("kst-mm-x", "M", BookSide.BID, Price(4000), Qty(9900), slot="mm_bid")]
+    assert ctx.microprice() == pytest.approx(0.41)  # 1 lot each side at 40/42 once our 99 lots are removed
+    assert book.microprice() == pytest.approx(0.4198, abs=1e-4)  # raw book: our size drags fair up
+
+
+def test_gate_side_bias_expires_with_the_verdict() -> None:
+    clock = ManualClock(T)
+    gate = LLMGate(LLMCfg(mode="gate"), _FakeProvider(), None, EventBus(), clock, trading_day_tz="UTC")
+    c = _cand()
+    gate.verdicts["M"] = Verdict("M", True, 80, BookSide.BID, "ok", T, state_bucket(c), "fake", "fake-1")
+    assert gate.side_bias("M") is BookSide.BID
+    clock.advance(gate.cfg.cache_ttl_s + 1)
+    assert gate.side_bias("M") is None  # stale hint no longer blocks the other side

@@ -155,8 +155,12 @@ class LLMGate:
         return False, None  # wait for the verdict
 
     def side_bias(self, ticker: str) -> BookSide | None:
+        """Side hint of an unexpired verdict. A stale one must not keep restricting entries: the restricted
+        side never produces an entry, so it would never trigger the request that refreshes the verdict."""
         v = self.verdicts.get(ticker)
-        return None if v is None else v.side
+        if v is None or self.clock.now_ms() - v.ts_ms > self.cfg.cache_ttl_s * 1000:
+            return None
+        return v.side
 
     def request(self, c: Candidate) -> None:
         if c.ticker not in self.pending:

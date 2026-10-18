@@ -2,6 +2,9 @@
 
 Security: binds to 127.0.0.1 by default. If `web.api_token` is set, every control/trading endpoint and
 the WebSocket require it (Authorization: Bearer <token> or ?token=). Non-local binds REQUIRE a token.
+Without a token, browser requests to those endpoints must come from the UI's own origin (or a configured
+CORS origin): any web page can POST to localhost, and a bodiless POST such as /api/control/flatten needs
+no CORS preflight.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ import hmac
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,14 +63,26 @@ def create_app(app: Application) -> FastAPI:
     if cfg.host not in ("127.0.0.1", "localhost", "::1") and not token:
         raise RuntimeError("web.host is not local: set KST_WEB__API_TOKEN to protect the control endpoints")
 
+    local_names = {"127.0.0.1", "localhost", "::1", cfg.host}
+
     def _check(supplied: str | None) -> None:
         if token and not (supplied and hmac.compare_digest(supplied, token)):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or missing API token")
+
+    def _origin_ok(origin: str | None, host: str | None) -> bool:
+        """CSRF guard for token-less setups. Non-browser clients send no Origin. The Host check also
+        refuses DNS-rebinding pages, whose Origin and Host both carry the attacker's name."""
+        if token or not origin or origin in cfg.cors_origins:
+            return True
+        o = urlsplit(origin)
+        return bool(host) and o.netloc == host and o.hostname in local_names
 
     def auth(request: Request) -> str:
         h = request.headers.get("authorization", "")
         supplied = h[7:] if h.lower().startswith("bearer ") else request.query_params.get("token")
         _check(supplied)
+        if not _origin_ok(request.headers.get("origin"), request.headers.get("host")):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "cross-origin request refused")
         return request.client.host if request.client else "web"
 
     api = FastAPI(title="kst", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -230,6 +246,9 @@ def create_app(app: Application) -> FastAPI:
     async def ws(websocket: WebSocket, token_q: str | None = Query(None, alias="token")) -> None:
         if token and not (token_q and hmac.compare_digest(token_q, token)):
             await websocket.close(code=4401)
+            return
+        if not _origin_ok(websocket.headers.get("origin"), websocket.headers.get("host")):
+            await websocket.close(code=4403)
             return
         await hub.handle(websocket)
 

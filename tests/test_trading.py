@@ -211,3 +211,84 @@ async def test_rejected_quote_slot_backs_off(hs: Harness) -> None:
     hs.clock.set(hs.clock.now_ms() + hs.oms.reject_backoff_ms)
     await hs.oms.reconcile("edge_taker", "M", want)
     assert len(seen) == 2
+
+
+async def test_flatten_slices_to_order_caps_and_survives_wide_spread(hs: Harness) -> None:
+    hs.add_market("M")
+    hs.set_book("M", bids=[(0.40, 100)], asks=[(0.42, 100)])
+    await hs.oms.take(_take("M", BookSide.BID, 0.42, 30), "edge_taker")
+    await hs.oms.reconcile(
+        "edge_taker",
+        "M",
+        [QuoteTarget("M", "exit", BookSide.ASK, Price(6000), Qty(3000), reduce_only_intent=True)],
+    )
+    hs.risk.limits = hs.risk.limits.patch({"max_order_contracts": 10})[0]
+    # Spread widens: mid 0.55, so the flatten limit (bid − 5¢ = 0.35) is 20¢ from the mid.
+    hs.set_book("M", bids=[(0.40, 100)], asks=[(0.70, 100)])
+    res = await hs.control.flatten(Actor.WEB)
+    assert res["ok"], res
+    assert hs.portfolio.positions["M"].qty == 0
+    assert hs.oms.live_orders("M") == []  # the resting exit was cancelled first (no flip to NO)
+    flats = [o for o in hs.oms.orders.values() if o.strategy == "flatten"]
+    assert len(flats) == 3 and all(o.qty == 1000 and o.status is OrderStatus.FILLED for o in flats)
+
+
+async def test_stacked_exits_cannot_flip_without_entry_checks(hs: Harness) -> None:
+    hs.add_market("M")
+    hs.set_book("M", bids=[(0.40, 50)], asks=[(0.42, 50)])
+    await hs.oms.take(_take("M", BookSide.BID, 0.42, 10), "edge_taker")
+    await hs.control.pause(Actor.WEB, "test")
+    await hs.oms.reconcile(
+        "edge_taker",
+        "M",
+        [QuoteTarget("M", "exit", BookSide.ASK, Price(4500), Qty(1000), reduce_only_intent=True)],
+    )
+    assert len(hs.oms.live_orders("M")) == 1  # the first exit is risk-reducing: allowed while PAUSED
+    # A second full-size exit would flip to −10 if both filled: it is an entry, and PAUSED blocks it.
+    second = await hs.oms.take(
+        TakeIntent("M", BookSide.ASK, Price(4000), Qty(1000), "exit", reduce_only=True), "edge_taker"
+    )
+    assert "EngineStateAllows" in second.reject_reason
+    assert hs.portfolio.positions["M"].qty == 1000
+
+
+async def test_duplicate_terminal_message_is_ignored(hs: Harness) -> None:
+    hs.add_market("M")
+    hs.set_book("M", bids=[(0.40, 5)], asks=[(0.42, 5)])
+    o = Order(new_client_order_id("manual"), "M", BookSide.BID, Price(4200), Qty(100), post_only=True)
+    await hs.oms.submit(o)
+    assert o.status is OrderStatus.REJECTED and len(hs.risk._reject_ts) == 1
+    hs.oms.on_broker_order(o.client_order_id, OrderStatus.REJECTED, reason="again")
+    assert len(hs.risk._reject_ts) == 1  # one reject counts once toward the reject-storm breaker
+
+
+def test_exchange_position_sync_waits_for_a_confirmed_mismatch(h: Harness) -> None:
+    h.add_market("M")
+    row = {"ticker": "M", "qty": 500, "exposure": 2_000_000}
+    h.portfolio.sync_from_exchange(None, [row])
+    assert "M" not in h.portfolio.positions or h.portfolio.positions["M"].qty == 0  # maybe a fill in flight
+    h.portfolio.sync_from_exchange(None, [row])
+    assert h.portfolio.positions["M"].qty == 500  # same mismatch twice → adopted
+    h.portfolio.sync_from_exchange(None, [], confirm=False)
+    assert h.portfolio.positions["M"].qty == 0  # startup sync adopts immediately
+
+
+async def test_exchange_sync_closes_orders_the_exchange_does_not_have(hs: Harness) -> None:
+    hs.add_market("M")
+    hs.set_book("M", bids=[(0.30, 5)], asks=[(0.50, 5)])
+    await hs.oms.reconcile(
+        "edge_taker", "M", [QuoteTarget("M", "entry_bid", BookSide.BID, Price(3500), Qty(500))]
+    )
+    (resting,) = hs.oms.live_orders("M")
+    # A create whose acceptance was unknown (5xx/409/transport) and that never reached the exchange.
+    lost = Order(new_client_order_id("edge_taker"), "M", BookSide.BID, Price(3400), Qty(500), slot="x")
+    lost.created_ms = hs.clock.now_ms()
+    hs.oms.orders[lost.client_order_id] = lost
+    hs.clock.advance(120)
+    young = Order(new_client_order_id("edge_taker"), "M", BookSide.BID, Price(3300), Qty(100), slot="y")
+    young.created_ms = hs.clock.now_ms()
+    hs.oms.orders[young.client_order_id] = young
+    hs.oms.adopt_open_orders([resting], prune_before_ms=hs.clock.now_ms() - 60_000)
+    assert lost.status is OrderStatus.CANCELED and lost.reject_reason == ""
+    assert resting.status is OrderStatus.RESTING  # still open on the exchange
+    assert young.status is OrderStatus.PENDING_NEW  # may simply be newer than the snapshot

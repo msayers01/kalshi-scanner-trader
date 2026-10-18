@@ -303,14 +303,15 @@ class OrderManager:
         except Exception:
             log.warning("order_bad_transition", coid=coid, frm=o.status.value, to=status.value)
             return
+        if not changed:
+            return  # duplicate or late message (e.g. CANCELED after cancel_all already marked it)
         if status is OrderStatus.REJECTED:
             o.reject_reason = reason
             self.risk.on_exchange_reject()
             self.bus.publish(Alert(now, "warning", f"Order rejected: {o.ticker}", reason))
         if status.is_terminal:
             self.risk.on_order_done(o.ticker, coid, o.filled)
-        if changed:
-            self.bus.publish(OrderUpdated(now, o))
+        self.bus.publish(OrderUpdated(now, o))
 
     def on_broker_fill(self, fill: Fill) -> None:
         if fill.fill_id:
@@ -344,8 +345,15 @@ class OrderManager:
             ):
                 await self.broker.amend(o, o.price, o.qty, expiration_ts=now_s + self.order_ttl_s)
 
-    def adopt_open_orders(self, orders: list[Order]) -> None:
-        """Startup/reconcile: track exchange orders we don't know (e.g. after a restart)."""
+    def adopt_open_orders(self, orders: list[Order], *, prune_before_ms: int | None = None) -> None:
+        """Startup/reconcile: track exchange orders we don't know (e.g. after a restart).
+
+        With `prune_before_ms`, `orders` must be the exchange's complete open-order list: local live orders
+        created before that time that it lacks are closed. Otherwise an acceptance-unknown create that never
+        reached the exchange (or a resting order whose cancel/expiry message was missed) holds its exposure
+        and blocks its quote slot forever. Late fills still apply through the normal fill path.
+        """
+        open_ids = {o.client_order_id for o in orders}
         for o in orders:
             existing = self.orders.get(o.client_order_id)
             if existing is not None and existing.status is OrderStatus.PENDING_NEW:
@@ -355,3 +363,9 @@ class OrderManager:
                 self.orders[o.client_order_id] = o
                 if o.exchange_order_id:
                     self._ex_to_coid[o.exchange_order_id] = o.client_order_id
+        if prune_before_ms is None:
+            return
+        for o in self.live_orders():
+            if o.client_order_id not in open_ids and o.created_ms and o.created_ms < prune_before_ms:
+                log.warning("order_not_on_exchange", coid=o.client_order_id, status=o.status.value)
+                self.on_broker_order(o.client_order_id, OrderStatus.CANCELED, reason="not_on_exchange")
