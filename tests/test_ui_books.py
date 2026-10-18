@@ -41,6 +41,33 @@ async def test_ui_live_books_poll_fast_and_only_those(hs: Harness) -> None:
     assert set(seen) == {"B"}
 
 
+def test_hub_adds_open_positions_to_live_set_only_while_a_ui_is_connected(tmp_path: Any) -> None:
+    from kst.api.hub import _Client
+    from kst.app import Application
+    from kst.config import Settings
+    from kst.core.fixedpoint import Qty
+    from kst.domain.positions import Position
+
+    s = Settings()
+    s.app.data_dir = tmp_path
+    s.llm.mode = "off"
+    app = Application(s)
+    app.portfolio.positions["P"] = Position("P", qty=Qty(500))
+    app.portfolio.positions["FLAT"] = Position("FLAT")
+    live = lambda: app.md._focus_requests.get(app.md.UI_LIVE, set())  # noqa: E731
+
+    app.hub._refresh_live_focus()
+    assert live() == set()  # nobody watching: no extra polling
+    c = _Client(object())  # type: ignore[arg-type]
+    c.book = "B"
+    app.hub.clients.add(c)
+    app.hub._refresh_live_focus()
+    assert live() == {"B", "P"}
+    s.marketdata.ui_live_positions = False
+    app.hub._refresh_live_focus()
+    assert live() == {"B"}
+
+
 async def test_ui_live_poll_disabled_and_idle(hs: Harness) -> None:
     hs.md.cfg.ui_book_interval_s = 0
     await asyncio.wait_for(hs.md.run_poll_ui_books(), 0.1)  # returns immediately when off

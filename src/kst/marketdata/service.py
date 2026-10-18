@@ -255,14 +255,15 @@ class MarketDataService:
     UI_LIVE = "ui_live"  # focus source: books a UI client is watching right now
 
     async def run_poll_ui_books(self) -> None:
-        """REST mode: refresh only the books open in the UI every `ui_book_interval_s` (one request), so the
-        manual ticket's Bid/Mid/Ask track the market far faster than the 3 s focus-set poll."""
+        """REST mode: refresh the books open in the UI (and, while one is connected, open positions) every
+        `ui_book_interval_s` in ONE request (≤ 100 books), so the manual ticket and the live equity chart
+        track the market far faster than the 3 s focus-set poll."""
         interval = self.cfg.ui_book_interval_s
         if interval <= 0:
             return
         while True:
             t0 = time.monotonic()
-            tickers = sorted(self._focus_requests.get(self.UI_LIVE, set()))[:5]
+            tickers = sorted(self._focus_requests.get(self.UI_LIVE, set()))[:100]  # one orderbooks call
             if tickers:
                 try:
                     now = self.clock.now_ms()

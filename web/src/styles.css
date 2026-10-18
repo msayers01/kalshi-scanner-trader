@@ -196,11 +196,20 @@ th.filtered .th-btn { color: var(--accent); }
 .pchart-base { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.6; }
 .pchart-cross { stroke: var(--muted); stroke-width: 1; opacity: 0.7; }
 .pchart-dot { stroke: var(--panel); stroke-width: 2; }
-.tone-pos .pchart-line { stroke: var(--pos); }
-.tone-neg .pchart-line { stroke: var(--neg); }
-.tone-pos .pchart-dot { fill: var(--pos); }
-.tone-neg .pchart-dot { fill: var(--neg); }
-.pchart-ranges { display: flex; gap: 4px; padding: 6px 0 4px; border-top: 1px solid var(--border); margin-top: 6px; }
+.pchart-line.pos { stroke: var(--pos); }
+.pchart-line.neg { stroke: var(--neg); }
+.pchart-dot.pos { fill: var(--pos); }
+.pchart-dot.neg { fill: var(--neg); }
+.pchart-gap { fill: none; stroke: var(--muted); stroke-width: 1.25; stroke-dasharray: 1 3; opacity: 0.6; }
+.pchart-daysep { stroke: var(--border); stroke-width: 1; }
+.pchart-openlabel { fill: var(--muted); font: 10px var(--mono); }
+.pchart-live { margin-left: 6px; color: var(--pos); font: 600 10px var(--mono); }
+.pchart-live.stale { color: var(--warn); }
+.pchart-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 0 4px; border-top: 1px solid var(--border); margin-top: 6px; }
+.pchart-interval { display: flex; align-items: center; gap: 4px; }
+.pchart-interval select { font-size: 12px; padding: 2px 4px; }
+.pchart-n { width: 52px; text-align: right; font: 12px var(--mono); }
+.pchart-ranges { display: flex; flex-wrap: wrap; gap: 2px; }
 .pchart-ranges button { background: none; border: none; border-radius: 4px; padding: 3px 10px; font-weight: 700; font-size: 12px; cursor: pointer; color: var(--muted); }
 .pchart-ranges button:hover { color: var(--text); }
 .tone-pos .pchart-ranges button.on { background: color-mix(in srgb, var(--pos) 18%, transparent); color: var(--pos); }

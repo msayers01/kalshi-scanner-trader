@@ -444,9 +444,16 @@ class PortfolioService:
         self._save()
         return report
 
-    async def run(self, publish_s: float = 1.0) -> None:
+    async def run(self, tick_ms: int = 1000, heartbeat_ms: int = 1000) -> None:
+        """Re-mark every `tick_ms`; publish PortfolioUpdated when equity or cash moved, or every
+        `heartbeat_ms` regardless (risk monitors and the UI rely on a steady beat)."""
+        last: tuple[int, int] | None = None
+        last_ms = 0
         while True:
             self.roll_day_if_needed()
             s = self.summary()
-            self.bus.publish(PortfolioUpdated(s.ts_ms, s))
-            await asyncio.sleep(publish_s)
+            key = (s.equity, s.cash)
+            if key != last or s.ts_ms - last_ms >= heartbeat_ms:
+                self.bus.publish(PortfolioUpdated(s.ts_ms, s))
+                last, last_ms = key, s.ts_ms
+            await asyncio.sleep(tick_ms / 1000)
