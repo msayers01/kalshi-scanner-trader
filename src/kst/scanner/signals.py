@@ -29,7 +29,9 @@ class Edge:
         return (b, BookSide.BID) if b >= s else (s, BookSide.ASK)
 
 
-def taker_edge(q: float, bid: Price | None, ask: Price | None, fees: FeeSchedule, rounding: float = 0.0001) -> Edge:
+def taker_edge(
+    q: float, bid: Price | None, ask: Price | None, fees: FeeSchedule, rounding: float = 0.0001
+) -> Edge:
     buy = sell = None
     if ask is not None and 0 < ask < PRICE_SCALE:
         a = ask / PRICE_SCALE
@@ -62,7 +64,8 @@ class ArbOpportunity:
     @property
     def cost_per_basket(self) -> float:
         return sum(
-            (leg.price if leg.side is BookSide.BID else PRICE_SCALE - leg.price) / PRICE_SCALE for leg in self.legs
+            (leg.price if leg.side is BookSide.BID else PRICE_SCALE - leg.price) / PRICE_SCALE
+            for leg in self.legs
         )
 
 
@@ -71,12 +74,18 @@ def is_exhaustive(markets: list[Market]) -> bool:
     lows = [m for m in markets if m.strike_type is StrikeType.LESS and m.cap_strike is not None]
     highs = [m for m in markets if m.strike_type is StrikeType.GREATER and m.floor_strike is not None]
     mids = sorted(
-        (m for m in markets if m.strike_type is StrikeType.BETWEEN and m.floor_strike is not None and m.cap_strike is not None),
+        (
+            m
+            for m in markets
+            if m.strike_type is StrikeType.BETWEEN and m.floor_strike is not None and m.cap_strike is not None
+        ),
         key=lambda m: m.floor_strike or 0.0,
     )
     if len(lows) != 1 or len(highs) != 1 or len(lows) + len(highs) + len(mids) != len(markets):
         return False
-    strikes = [lows[0].cap_strike, highs[0].floor_strike] + [x for m in mids for x in (m.floor_strike, m.cap_strike)]
+    strikes = [lows[0].cap_strike, highs[0].floor_strike] + [
+        x for m in mids for x in (m.floor_strike, m.cap_strike)
+    ]
     integral = all(s is not None and float(s).is_integer() for s in strikes)
     unit = 1.0 if integral else 0.01
     edge = lows[0].cap_strike
@@ -123,10 +132,16 @@ def detect_event_arbs(
                     legs.append(ArbLeg(m.ticker, BookSide.ASK, bid, bq))
                     total += gain
         if len(legs) >= 2 and total > margin:
-            out.append(ArbOpportunity(event.event_ticker, "sell_all", tuple(legs), total, Qty(min(leg.max_qty for leg in legs))))
+            out.append(
+                ArbOpportunity(
+                    event.event_ticker, "sell_all", tuple(legs), total, Qty(min(leg.max_qty for leg in legs))
+                )
+            )
 
         # Buy-all: YES on every market; requires exhaustiveness (exactly one wins).
-        if len(active) == len(markets) and (event.event_ticker in exhaustive_allowlist or is_exhaustive(markets)):
+        if len(active) == len(markets) and (
+            event.event_ticker in exhaustive_allowlist or is_exhaustive(markets)
+        ):
             cost, ylegs, ok = 0.0, [], True
             for m in active:
                 _, _, ask, aq = tops[m.ticker]
@@ -136,7 +151,15 @@ def detect_event_arbs(
                 cost += ask / PRICE_SCALE + fee(m, ask)
                 ylegs.append(ArbLeg(m.ticker, BookSide.BID, ask, aq))
             if ok and 1.0 - cost > margin:
-                out.append(ArbOpportunity(event.event_ticker, "buy_all", tuple(ylegs), 1.0 - cost, Qty(min(leg.max_qty for leg in ylegs))))
+                out.append(
+                    ArbOpportunity(
+                        event.event_ticker,
+                        "buy_all",
+                        tuple(ylegs),
+                        1.0 - cost,
+                        Qty(min(leg.max_qty for leg in ylegs)),
+                    )
+                )
 
     out.extend(_ladder_arbs(event, active, tops, fee, margin))
     return out
@@ -153,10 +176,16 @@ def _ladder_arbs(
     out: list[ArbOpportunity] = []
     for kind in (StrikeType.GREATER, StrikeType.LESS):
         if kind is StrikeType.GREATER:
-            ladder = sorted((m for m in markets if m.strike_type is kind and m.floor_strike is not None), key=lambda m: m.floor_strike or 0.0)
+            ladder = sorted(
+                (m for m in markets if m.strike_type is kind and m.floor_strike is not None),
+                key=lambda m: m.floor_strike or 0.0,
+            )
         else:
             # For "less", P(<K) increases with K → reverse so the same "buy low-index, sell high-index" logic applies.
-            ladder = sorted((m for m in markets if m.strike_type is kind and m.cap_strike is not None), key=lambda m: -(m.cap_strike or 0.0))
+            ladder = sorted(
+                (m for m in markets if m.strike_type is kind and m.cap_strike is not None),
+                key=lambda m: -(m.cap_strike or 0.0),
+            )
         best: tuple[float, Market, Market] | None = None
         cheapest: tuple[float, Market] | None = None  # (all-in cost of buying YES, market) over earlier rungs
         for m in ladder:
@@ -174,6 +203,9 @@ def _ladder_arbs(
             _, _, a_lo, aq_lo = tops[lo.ticker]
             b_hi, bq_hi, _, _ = tops[hi.ticker]
             assert a_lo is not None and b_hi is not None
-            legs = (ArbLeg(lo.ticker, BookSide.BID, a_lo, aq_lo), ArbLeg(hi.ticker, BookSide.ASK, b_hi, bq_hi))
+            legs = (
+                ArbLeg(lo.ticker, BookSide.BID, a_lo, aq_lo),
+                ArbLeg(hi.ticker, BookSide.ASK, b_hi, bq_hi),
+            )
             out.append(ArbOpportunity(event.event_ticker, "ladder", legs, profit, Qty(min(aq_lo, bq_hi))))
     return out

@@ -24,6 +24,7 @@ dependencies = [
     "alembic>=1.14",
     "discord.py>=2.4",
     "tzdata>=2024.2",
+    "anthropic>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +61,9 @@ ignore = [
     "RUF002",
     "RUF003",
     "B008",    # FastAPI Depends() in defaults
+    "PT018",   # composite asserts are fine in tests
+    "RUF009",  # NewType "calls" (Qty(0)) in dataclass defaults are plain ints
+    "SIM108",  # ternaries are not always clearer
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -67,6 +71,7 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.12"
+plugins = ["pydantic.mypy"]
 mypy_path = "src"
 packages = ["kst"]
 warn_unused_ignores = true

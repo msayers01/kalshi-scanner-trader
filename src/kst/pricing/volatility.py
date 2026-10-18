@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections import deque
 from dataclasses import dataclass
@@ -75,7 +76,7 @@ class BlendedVol:
 
     def seed_from_closes(self, closes: list[float], interval_s: float) -> None:
         """Seed the slow (and fast) estimators from evenly spaced closes (e.g. 1-min candles)."""
-        rets = [math.log(b / a) for a, b in zip(closes, closes[1:], strict=False) if a > 0 and b > 0]
+        rets = [math.log(b / a) for a, b in itertools.pairwise(closes) if a > 0 and b > 0]
         if len(rets) < 10:
             return
         var = sum(r * r for r in rets) / len(rets) / interval_s

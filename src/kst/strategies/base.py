@@ -1,0 +1,43 @@
+"""Strategy interface. Strategies are pure: (context) → Decision. No I/O, no clocks, no adapters."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+
+from kst.core.types import BookSide
+from kst.domain.fees import FeeSchedule
+from kst.domain.market import Market
+from kst.domain.orderbook import OrderBook
+from kst.domain.orders import Decision, Order
+from kst.domain.positions import Position
+from kst.pricing.base import Posterior
+
+
+@dataclass(slots=True)
+class StrategyContext:
+    now_ms: int
+    market: Market
+    book: OrderBook
+    fees: FeeSchedule
+    posterior: Posterior | None  # q̂ (model ⊕ market); None if unpriced
+    position: Position | None  # current position in this market (any strategy)
+    open_orders: list[Order] = field(default_factory=list)  # this strategy's live orders in this market
+    bankroll_usd: float = 0.0  # equity × bankroll_fraction
+    allow_entries: bool = False  # RUNNING + autotrade + gate approved + risk headroom
+    side_bias: BookSide | None = None  # optional LLM hint; strategies may only use it to *restrict* entries
+    rounding: float = 0.0001  # $ per fill (fee balance-precision allowance)
+
+    @property
+    def pos_qty(self) -> int:
+        return 0 if self.position is None else self.position.qty
+
+
+class Strategy(ABC):
+    name: str = "strategy"
+
+    @abstractmethod
+    def evaluate(self, ctx: StrategyContext) -> Decision: ...
+
+    def on_trade(self, ticker: str, price: int, qty: int, taker_side: BookSide, ts_ms: int) -> None:  # noqa: B027
+        """Optional hook for strategies that track order flow."""

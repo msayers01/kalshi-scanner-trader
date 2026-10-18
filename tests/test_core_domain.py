@@ -25,7 +25,12 @@ from kst.core.types import BookSide, OrderStatus
 from kst.domain.fees import FeeModel
 from kst.domain.market import PriceBand, PriceGrid
 from kst.domain.orderbook import OrderBook
-from kst.domain.orders import IllegalTransition, Order, strategy_from_client_order_id, new_client_order_id
+from kst.domain.orders import (
+    IllegalTransitionError,
+    Order,
+    new_client_order_id,
+    strategy_from_client_order_id,
+)
 from kst.domain.positions import Position
 
 # ------------------------------------------------------------------ fixed point
@@ -74,7 +79,9 @@ def test_tapered_grid() -> None:
     assert g.snap_down(1050) == 1000 and g.snap_up(1050) == 1100
     assert g.snap_down(5) is None
     assert g.tick_above(1000) == 1100 and g.tick_below(1000) == 990
-    assert PriceGrid.of([PriceBand(0, 1000, 10), PriceBand(1000, 9000, 100), PriceBand(9000, 10_000, 10)]) is g
+    assert (
+        PriceGrid.of([PriceBand(0, 1000, 10), PriceBand(1000, 9000, 100), PriceBand(9000, 10_000, 10)]) is g
+    )
 
 
 def test_cent_grid_excludes_bounds() -> None:
@@ -141,18 +148,38 @@ def test_fee_types() -> None:
 
 
 def test_order_fsm() -> None:
-    o = Order(client_order_id=new_client_order_id("edge_taker"), ticker="T", side=BookSide.BID, price=Price(5000), qty=Qty(1000))
-    assert strategy_from_client_order_id(o.client_order_id) == "edgetaker"
+    o = Order(
+        client_order_id=new_client_order_id("edge_taker"),
+        ticker="T",
+        side=BookSide.BID,
+        price=Price(5000),
+        qty=Qty(1000),
+    )
+    assert strategy_from_client_order_id(o.client_order_id) == "edge_taker"
     assert o.transition(OrderStatus.RESTING, 1)
     o.apply_fill(400, 5000, 0, 2)
     assert o.remaining == 600 and o.status is OrderStatus.RESTING
     o.apply_fill(600, 5000, 0, 3)
     assert o.status is OrderStatus.FILLED
     assert not o.transition(OrderStatus.CANCELED, 4)  # late cancel after fill is ignored
-    o2 = Order(client_order_id="x", ticker="T", side=BookSide.BID, price=Price(5000), qty=Qty(100), status=OrderStatus.RESTING)
+    o2 = Order(
+        client_order_id="x",
+        ticker="T",
+        side=BookSide.BID,
+        price=Price(5000),
+        qty=Qty(100),
+        status=OrderStatus.RESTING,
+    )
     o2.transition(OrderStatus.CANCELED, 1)
-    o3 = Order(client_order_id="y", ticker="T", side=BookSide.BID, price=Price(5000), qty=Qty(100), status=OrderStatus.PENDING_CANCEL)
-    with pytest.raises(IllegalTransition):
+    o3 = Order(
+        client_order_id="y",
+        ticker="T",
+        side=BookSide.BID,
+        price=Price(5000),
+        qty=Qty(100),
+        status=OrderStatus.PENDING_CANCEL,
+    )
+    with pytest.raises(IllegalTransitionError):
         o3.transition(OrderStatus.REJECTED, 1)
 
 

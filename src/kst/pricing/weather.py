@@ -18,7 +18,12 @@ from kst.domain.market import Market
 from kst.pricing.base import FairValue
 
 _DATE_RE = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})")
-_MONTHS = {m: i for i, m in enumerate(["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], 1)}
+_MONTHS = {
+    m: i
+    for i, m in enumerate(
+        ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], 1
+    )
+}
 
 
 def market_date(event_ticker: str) -> date | None:
@@ -97,19 +102,19 @@ def strike_probability_int(
     """
     m = None if observed_max is None else round(observed_max)
 
-    def F(k: float) -> float:  # P(T ≤ k)
+    def cdf_t(k: float) -> float:  # P(T ≤ k) for T = max(M, X)
         if m is not None and k < m:
             return 0.0
         return cdf(k)
 
     if strike_type in (StrikeType.GREATER, StrikeType.GREATER_OR_EQUAL) and floor is not None:
         thr = math.floor(floor) if strike_type is StrikeType.GREATER else math.ceil(floor) - 1
-        return 1.0 - F(thr)
+        return 1.0 - cdf_t(thr)
     if strike_type in (StrikeType.LESS, StrikeType.LESS_OR_EQUAL) and cap is not None:
         thr = math.ceil(cap) - 1 if strike_type is StrikeType.LESS else math.floor(cap)
-        return F(thr)
+        return cdf_t(thr)
     if strike_type is StrikeType.BETWEEN and floor is not None and cap is not None:
-        return max(0.0, F(math.floor(cap)) - F(math.ceil(floor) - 1))
+        return max(0.0, cdf_t(math.floor(cap)) - cdf_t(math.ceil(floor) - 1))
     return None
 
 
@@ -121,7 +126,15 @@ class WeatherStore:
 
 class WeatherEnsembleModel:
     name = "weather_ensemble"
-    _STRIKES = frozenset({StrikeType.GREATER, StrikeType.GREATER_OR_EQUAL, StrikeType.LESS, StrikeType.LESS_OR_EQUAL, StrikeType.BETWEEN})
+    _STRIKES = frozenset(
+        {
+            StrikeType.GREATER,
+            StrikeType.GREATER_OR_EQUAL,
+            StrikeType.LESS,
+            StrikeType.LESS_OR_EQUAL,
+            StrikeType.BETWEEN,
+        }
+    )
 
     def __init__(
         self,

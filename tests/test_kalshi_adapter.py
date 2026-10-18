@@ -31,7 +31,9 @@ BASE = "https://api.test/trade-api/v2"
 
 def _rsa_signer() -> tuple[KalshiSigner, rsa.RSAPublicKey]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    )
     return KalshiSigner.from_pem("kid", pem), key.public_key()
 
 
@@ -52,8 +54,12 @@ def test_ed25519_signature_verifies_and_full_url_path() -> None:
     key = ed25519.Ed25519PrivateKey.generate()
     signer = KalshiSigner("kid", key)
     assert signer.key_type == "ed25519"
-    h = signer.headers("post", "https://x.kalshi.com/trade-api/v2/portfolio/events/orders?a=1", timestamp_ms=5)
-    key.public_key().verify(base64.b64decode(h["KALSHI-ACCESS-SIGNATURE"]), b"5POST/trade-api/v2/portfolio/events/orders")
+    h = signer.headers(
+        "post", "https://x.kalshi.com/trade-api/v2/portfolio/events/orders?a=1", timestamp_ms=5
+    )
+    key.public_key().verify(
+        base64.b64decode(h["KALSHI-ACCESS-SIGNATURE"]), b"5POST/trade-api/v2/portfolio/events/orders"
+    )
 
 
 # ------------------------------------------------------------------ parsing real payloads
@@ -105,23 +111,46 @@ def test_parse_ws_book_messages() -> None:
 def test_parse_fill_order_trade() -> None:
     f = parse_fill(
         {
-            "trade_id": "t1", "order_id": "o1", "client_order_id": "kst-edgetaker-abc", "market_ticker": "M",
-            "is_taker": True, "yes_price_dollars": "0.7500", "count_fp": "278.00", "fee_cost": "0.010000",
-            "book_side": "bid", "ts_ms": 1671899397000,
+            "trade_id": "t1",
+            "order_id": "o1",
+            "client_order_id": "kst-et-abc",
+            "market_ticker": "M",
+            "is_taker": True,
+            "yes_price_dollars": "0.7500",
+            "count_fp": "278.00",
+            "fee_cost": "0.010000",
+            "book_side": "bid",
+            "ts_ms": 1671899397000,
         }
     )
     assert f.side is BookSide.BID and f.price == 7500 and f.qty == 27800 and f.fee == 10_000
-    assert f.strategy == "edgetaker"
+    assert f.strategy == "edge_taker"
     o = parse_order(
         {
-            "order_id": "o1", "client_order_id": "c1", "ticker": "M", "status": "executed", "book_side": "ask",
-            "yes_price_dollars": "0.3500", "fill_count_fp": "10.00", "remaining_count_fp": "0.00",
-            "initial_count_fp": "10.00", "taker_fees_dollars": "0.0200", "maker_fees_dollars": "0",
+            "order_id": "o1",
+            "client_order_id": "c1",
+            "ticker": "M",
+            "status": "executed",
+            "book_side": "ask",
+            "yes_price_dollars": "0.3500",
+            "fill_count_fp": "10.00",
+            "remaining_count_fp": "0.00",
+            "initial_count_fp": "10.00",
+            "taker_fees_dollars": "0.0200",
+            "maker_fees_dollars": "0",
             "created_time": "2024-12-01T10:00:00Z",
         }
     )
     assert o.status is OrderStatus.FILLED and o.side is BookSide.ASK and o.filled == 1000 and o.fees == 20_000
-    t = parse_trade({"market_ticker": "M", "yes_price_dollars": "0.36", "count_fp": "136.00", "taker_book_side": "ask", "ts_ms": 9})
+    t = parse_trade(
+        {
+            "market_ticker": "M",
+            "yes_price_dollars": "0.36",
+            "count_fp": "136.00",
+            "taker_book_side": "ask",
+            "ts_ms": 9,
+        }
+    )
     assert t == ("M", 3600, 13600, BookSide.ASK, 9)
 
 
@@ -151,9 +180,14 @@ async def test_rest_pagination_and_public_no_auth() -> None:
 @respx.mock
 async def test_rest_retry_on_429_and_error_mapping() -> None:
     respx.get(f"{BASE}/exchange/status").mock(
-        side_effect=[httpx.Response(429, json={"error": "too many requests"}), httpx.Response(200, json={"trading_active": True})]
+        side_effect=[
+            httpx.Response(429, json={"error": "too many requests"}),
+            httpx.Response(200, json={"trading_active": True}),
+        ]
     )
-    respx.get(f"{BASE}/markets/X").mock(return_value=httpx.Response(404, json={"error": {"code": "not_found", "message": "nope"}}))
+    respx.get(f"{BASE}/markets/X").mock(
+        return_value=httpx.Response(404, json={"error": {"code": "not_found", "message": "nope"}})
+    )
     rest = _client()
     assert (await rest.exchange_status())["trading_active"] is True
     with pytest.raises(KalshiApiError) as ei:
@@ -166,12 +200,20 @@ async def test_rest_retry_on_429_and_error_mapping() -> None:
 async def test_create_order_v2_body_and_auth() -> None:
     signer, _ = _rsa_signer()
     route = respx.post(f"{BASE}/portfolio/events/orders").mock(
-        return_value=httpx.Response(201, json={"order_id": "o1", "fill_count": "0.00", "remaining_count": "10.00", "ts_ms": 1})
+        return_value=httpx.Response(
+            201, json={"order_id": "o1", "fill_count": "0.00", "remaining_count": "10.00", "ts_ms": 1}
+        )
     )
     rest = _client(signer)
     await rest.create_order(
-        ticker="M", side=BookSide.ASK, price=5600, qty=1000, client_order_id="kst-x-1",
-        tif=TimeInForce.GTC, post_only=True, expiration_ts=1_800_000_000,
+        ticker="M",
+        side=BookSide.ASK,
+        price=5600,
+        qty=1000,
+        client_order_id="kst-x-1",
+        tif=TimeInForce.GTC,
+        post_only=True,
+        expiration_ts=1_800_000_000,
     )
     req = route.calls[0].request
     body = json.loads(req.content)

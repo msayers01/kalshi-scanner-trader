@@ -145,7 +145,11 @@ class KalshiWs:
         for ch in sorted(self._channels):
             await self._send("subscribe", {"channels": [ch]}, ch)
         if self._index_ids:
-            await self._send("subscribe", {"channels": ["cfbenchmarks_value"], "index_ids": sorted(self._index_ids)}, "cfbenchmarks_value")
+            await self._send(
+                "subscribe",
+                {"channels": ["cfbenchmarks_value"], "index_ids": sorted(self._index_ids)},
+                "cfbenchmarks_value",
+            )
         await self._sync_focus()
 
     async def _sync_focus(self) -> None:
@@ -168,9 +172,15 @@ class KalshiWs:
                 continue
             add, rem = want - have, have - want
             if add:
-                await self._send("update_subscription", {"sids": [sid], "market_tickers": sorted(add), "action": "add_markets"})
+                await self._send(
+                    "update_subscription",
+                    {"sids": [sid], "market_tickers": sorted(add), "action": "add_markets"},
+                )
             if rem and want:
-                await self._send("update_subscription", {"sids": [sid], "market_tickers": sorted(rem), "action": "delete_markets"})
+                await self._send(
+                    "update_subscription",
+                    {"sids": [sid], "market_tickers": sorted(rem), "action": "delete_markets"},
+                )
             elif rem and not want:
                 await self._send("unsubscribe", {"sids": [sid]})
                 self._channel_sid.pop(ch, None)
@@ -188,7 +198,9 @@ class KalshiWs:
             self._subscribed_focus[channel] = set()
             await self._sync_focus()
         elif channel == "cfbenchmarks_value":
-            await self._send("subscribe", {"channels": [channel], "index_ids": sorted(self._index_ids)}, channel)
+            await self._send(
+                "subscribe", {"channels": [channel], "index_ids": sorted(self._index_ids)}, channel
+            )
         else:
             await self._send("subscribe", {"channels": [channel]}, channel)
 
@@ -213,7 +225,11 @@ class KalshiWs:
             return
         if mtype == "error":
             self._pending.pop(msg.get("id", -1), None)
-            log.warning("kalshi_ws_error", code=(msg.get("msg") or {}).get("code"), detail=(msg.get("msg") or {}).get("msg"))
+            log.warning(
+                "kalshi_ws_error",
+                code=(msg.get("msg") or {}).get("code"),
+                detail=(msg.get("msg") or {}).get("msg"),
+            )
             return
         sid, seq = msg.get("sid"), msg.get("seq")
         if sid is not None and seq is not None:

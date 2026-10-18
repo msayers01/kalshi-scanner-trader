@@ -139,12 +139,13 @@ class OrderBook:
 
     def sweep(self, taker_side: BookSide, qty: int, limit: int | None = None) -> SweepResult:
         """Simulate a taker order. taker_side=BID buys YES (consumes asks); ASK sells YES (consumes bids)."""
-        if taker_side is BookSide.BID:
-            book, ordered = self.asks, sorted(self.asks)
-            ok = (lambda p: limit is None or p <= limit)
-        else:
-            book, ordered = self.bids, sorted(self.bids, reverse=True)
-            ok = (lambda p: limit is None or p >= limit)
+        buying = taker_side is BookSide.BID
+        book = self.asks if buying else self.bids
+        ordered = sorted(book, reverse=not buying)
+
+        def ok(p: int) -> bool:
+            return limit is None or (p <= limit if buying else p >= limit)
+
         remaining, cost, filled, worst = qty, 0, 0, None
         used: list[tuple[Price, Qty]] = []
         for p in ordered:

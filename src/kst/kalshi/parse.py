@@ -15,7 +15,7 @@ from kst.core.fixedpoint import (
     price_from_str,
     qty_from_str,
 )
-from kst.core.types import BookSide, MarketStatus, OrderStatus, StrikeType, TimeInForce
+from kst.core.types import BookSide, MarketStatus, OrderStatus, StrikeType
 from kst.domain.market import Event, Market, PriceBand, PriceGrid, Series, series_from_event_ticker
 from kst.domain.orders import Fill, Order, strategy_from_client_order_id
 
@@ -246,16 +246,28 @@ def parse_fill(d: dict[str, Any]) -> Fill:
 
 def parse_trade(d: dict[str, Any]) -> tuple[str, Price, Qty, BookSide, int]:
     side = d.get("taker_book_side")
-    taker = BookSide(side) if side in ("bid", "ask") else BookSide.from_outcome(d.get("taker_outcome_side") or d.get("taker_side", "yes"))
+    taker = (
+        BookSide(side)
+        if side in ("bid", "ask")
+        else BookSide.from_outcome(d.get("taker_outcome_side") or d.get("taker_side", "yes"))
+    )
     ts = int(d.get("ts_ms") or 0) or parse_iso_ms(d.get("created_time")) or int(d.get("ts") or 0) * 1000
-    return d.get("market_ticker") or d.get("ticker", ""), price_from_str(d["yes_price_dollars"]), qty_from_str(d["count_fp"]), taker, ts
+    return (
+        d.get("market_ticker") or d.get("ticker", ""),
+        price_from_str(d["yes_price_dollars"]),
+        qty_from_str(d["count_fp"]),
+        taker,
+        ts,
+    )
 
 
 def parse_position(d: dict[str, Any]) -> dict[str, Any]:
     return {
         "ticker": d.get("ticker") or d.get("market_ticker", ""),
         "qty": _q(d, "position_fp"),
-        "exposure": _m(d, "market_exposure_dollars") if "market_exposure_dollars" in d else _m(d, "position_cost_dollars"),
+        "exposure": _m(d, "market_exposure_dollars")
+        if "market_exposure_dollars" in d
+        else _m(d, "position_cost_dollars"),
         "realized": _m(d, "realized_pnl_dollars"),
         "fees": _m(d, "fees_paid_dollars"),
     }

@@ -19,9 +19,23 @@ from kst.kalshi.rest import KalshiRest
 log = get_logger(__name__)
 
 _META_FIELDS = (
-    "title", "yes_sub_title", "status", "open_time_ms", "close_time_ms", "expected_expiration_ms", "strike_type",
-    "floor_strike", "cap_strike", "rules_primary", "grid", "exchange_index", "can_close_early", "fee_waiver_until_ms",
-    "result", "category", "series_ticker",
+    "title",
+    "yes_sub_title",
+    "status",
+    "open_time_ms",
+    "close_time_ms",
+    "expected_expiration_ms",
+    "strike_type",
+    "floor_strike",
+    "cap_strike",
+    "rules_primary",
+    "grid",
+    "exchange_index",
+    "can_close_early",
+    "fee_waiver_until_ms",
+    "result",
+    "category",
+    "series_ticker",
 )
 
 
@@ -37,7 +51,9 @@ class MarketCatalog:
         self.events: dict[str, Event] = {}
         self.series: dict[str, Series] = {}
         self.universe: set[str] = set()
-        self.pinned: set[str] = set()  # markets we must keep (positions/orders) even if they leave the universe
+        self.pinned: set[str] = (
+            set()
+        )  # markets we must keep (positions/orders) even if they leave the universe
         self._series_loaded_ms = 0
         self.last_refresh_ms = 0
 
@@ -61,7 +77,9 @@ class MarketCatalog:
     def fees(self, market: Market) -> FeeSchedule:
         s = self.series.get(market.series_ticker)
         waived = market.fee_waiver_until_ms is not None and market.fee_waiver_until_ms > self.clock.now_ms()
-        return self.fee_model.schedule(s.fee_type if s else "quadratic", s.fee_multiplier if s else 1.0, waived=waived)
+        return self.fee_model.schedule(
+            s.fee_type if s else "quadratic", s.fee_multiplier if s else 1.0, waived=waived
+        )
 
     def universe_markets(self) -> list[Market]:
         return [m for t in self.universe if (m := self.markets.get(t)) is not None]
@@ -95,7 +113,17 @@ class MarketCatalog:
         for f in _META_FIELDS:
             setattr(cur, f, getattr(new, f))
         if new.stats_ts_ms >= cur.stats_ts_ms or cur.stats_ts_ms == 0:
-            for f in ("yes_bid", "yes_ask", "yes_bid_size", "yes_ask_size", "last_price", "previous_price", "volume", "volume_24h", "open_interest"):
+            for f in (
+                "yes_bid",
+                "yes_ask",
+                "yes_bid_size",
+                "yes_ask_size",
+                "last_price",
+                "previous_price",
+                "volume",
+                "volume_24h",
+                "open_interest",
+            ):
                 setattr(cur, f, getattr(new, f))
         return cur
 
@@ -113,7 +141,7 @@ class MarketCatalog:
             except Exception:
                 log.exception("series_refresh_failed")
         params: dict[str, object] = {"min_close_ts": now // 1000}
-        series_filter = self.cfg.include_series or [None]
+        series_filter: list[str | None] = list(self.cfg.include_series) or [None]
         new_events: dict[str, Event] = {}
         seen: set[str] = set()
         for s in series_filter:
@@ -139,7 +167,12 @@ class MarketCatalog:
             if t not in seen and t not in self.pinned:
                 del self.markets[t]
         self.last_refresh_ms = now
-        log.info("catalog_refreshed", events=len(self.events), markets=len(self.markets), universe=len(self.universe))
+        log.info(
+            "catalog_refreshed",
+            events=len(self.events),
+            markets=len(self.markets),
+            universe=len(self.universe),
+        )
         self.bus.publish(CatalogRefreshed(now, len(self.universe), len(self.events)))
 
     async def ensure_market(self, rest: KalshiRest, ticker: str) -> Market | None:

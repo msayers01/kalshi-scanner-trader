@@ -84,7 +84,9 @@ def combine_with_market(
     return Posterior(q=q, sd=q * (1.0 - q) * s, w_model=w_m / (w_m + w_p), fv=fv)
 
 
-def market_only_posterior(bid: float | None, ask: float | None, *, s_p_base: float = 0.35) -> Posterior | None:
+def market_only_posterior(
+    bid: float | None, ask: float | None, *, s_p_base: float = 0.35
+) -> Posterior | None:
     """No model: the mid is our estimate (used for marking and MM microprice fallbacks)."""
     if bid is None or ask is None or not (0.0 < bid < ask < 1.0):
         return None

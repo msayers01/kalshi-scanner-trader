@@ -60,11 +60,16 @@ class CalibrationSet:
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"default": asdict(self.default), "by_category": {k: asdict(v) for k, v in self.by_category.items()}}
+        data = {
+            "default": asdict(self.default),
+            "by_category": {k: asdict(v) for k, v in self.by_category.items()},
+        }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def fit_logistic_calibration(prices: np.ndarray, outcomes: np.ndarray, *, l2: float = 1e-3, iters: int = 50) -> CalibrationFit:
+def fit_logistic_calibration(
+    prices: np.ndarray, outcomes: np.ndarray, *, l2: float = 1e-3, iters: int = 50
+) -> CalibrationFit:
     """Logistic regression y ~ σ(α + β·logit(p)) by IRLS (Newton). Returns fit with covariance."""
     p = np.clip(np.asarray(prices, dtype=float), 1e-4, 1 - 1e-4)
     y = np.asarray(outcomes, dtype=float)
@@ -104,4 +109,6 @@ class CalibratedPriorModel:
             return None
         fit = self.calib.for_category(market.category)
         q, sd = fit.predict(mid)
-        return FairValue(p=q, sd=sd, model=self.name, ts_ms=now_ms, market_based=True, detail={"mid": round(mid, 4)})
+        return FairValue(
+            p=q, sd=sd, model=self.name, ts_ms=now_ms, market_based=True, detail={"mid": round(mid, 4)}
+        )

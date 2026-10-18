@@ -91,7 +91,7 @@ engine:
 
 llm:
   mode: gate                  # off | advisory | gate
-  scope: unmodeled_only       # unmodeled_only | all
+  scope: all                  # all | unmodeled_only  (only entries the strategy wants are asked)
   provider:
     kind: openai_compatible   # Ollama / LM Studio / vLLM / llama.cpp / OpenAI
     base_url: http://localhost:11434/v1

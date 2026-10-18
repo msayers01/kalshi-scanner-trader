@@ -77,7 +77,9 @@ def settlement_distribution(
     return SettlementDist("lin", mu, s, dist, nu)
 
 
-def strike_probability(sd: SettlementDist, strike_type: StrikeType, floor: float | None, cap: float | None) -> float | None:
+def strike_probability(
+    sd: SettlementDist, strike_type: StrikeType, floor: float | None, cap: float | None
+) -> float | None:
     """P(YES) for Kalshi strike semantics on a continuous underlying."""
     if strike_type in (StrikeType.GREATER, StrikeType.GREATER_OR_EQUAL) and floor is not None:
         return 1.0 - sd.cdf(floor)
@@ -129,7 +131,13 @@ class ReferenceStore:
 class CryptoDigitalModel:
     name = "crypto_digital"
     _STRIKES = frozenset(
-        {StrikeType.GREATER, StrikeType.GREATER_OR_EQUAL, StrikeType.LESS, StrikeType.LESS_OR_EQUAL, StrikeType.BETWEEN}
+        {
+            StrikeType.GREATER,
+            StrikeType.GREATER_OR_EQUAL,
+            StrikeType.LESS,
+            StrikeType.LESS_OR_EQUAL,
+            StrikeType.BETWEEN,
+        }
     )
 
     def __init__(
@@ -163,7 +171,9 @@ class CryptoDigitalModel:
             and market.close_time_ms is not None
         )
 
-    def _prob(self, market: Market, spot: float, var: float, tau_s: float, obs_avg: float | None) -> float | None:
+    def _prob(
+        self, market: Market, spot: float, var: float, tau_s: float, obs_avg: float | None
+    ) -> float | None:
         sd = settlement_distribution(
             spot, var, tau_s, window_s=self.window_s, observed_avg=obs_avg, dist=self.distribution, nu=self.nu
         )

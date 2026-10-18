@@ -25,7 +25,14 @@ from kst.core.fixedpoint import price_from_str
 from kst.core.logging import get_logger
 from kst.core.types import MarketStatus
 from kst.domain.orderbook import OrderBook
-from kst.kalshi.parse import parse_market, parse_rest_orderbook, parse_trade, parse_ws_delta, parse_ws_snapshot, update_market_stats
+from kst.kalshi.parse import (
+    parse_market,
+    parse_rest_orderbook,
+    parse_trade,
+    parse_ws_delta,
+    parse_ws_snapshot,
+    update_market_stats,
+)
 from kst.kalshi.rest import KalshiRest
 from kst.kalshi.ws import KalshiWs
 from kst.marketdata.catalog import MarketCatalog
@@ -106,6 +113,10 @@ class MarketDataService:
                 self.books.setdefault(t, OrderBook(t))
             if self.ws is not None:
                 self.ws.set_focus(new)
+
+    def add_focus(self, source: str, tickers: Iterable[str]) -> None:
+        """Union `tickers` into `source`'s request (e.g. markets the UI has opened)."""
+        self.request_focus(source, self._focus_requests.get(source, set()) | set(tickers))
 
     @property
     def focus(self) -> set[str]:
@@ -302,6 +313,8 @@ class MarketDataService:
             "books": len(self.books),
             "universe": len(self.catalog.universe),
             "ws_messages": self.ws.messages if self.ws else 0,
-            "last_book_poll_age_s": round((now - self.last_book_poll_ms) / 1000, 1) if self.last_book_poll_ms else None,
+            "last_book_poll_age_s": round((now - self.last_book_poll_ms) / 1000, 1)
+            if self.last_book_poll_ms
+            else None,
             "errors": self.errors,
         }

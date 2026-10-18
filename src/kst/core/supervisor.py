@@ -75,15 +75,20 @@ class Supervisor:
 
     def health(self) -> dict[str, dict[str, object]]:
         return {
-            s.name: {"running": s.running, "restarts": s.restarts, "critical": s.critical, "last_error": s.last_error}
+            s.name: {
+                "running": s.running,
+                "restarts": s.restarts,
+                "critical": s.critical,
+                "last_error": s.last_error,
+            }
             for s in self._specs.values()
         }
 
-    async def stop(self, timeout: float = 10.0) -> None:
+    async def stop(self, grace_s: float = 10.0) -> None:
         self._stopping = True
         tasks = [s.task for s in self._specs.values() if s.task is not None]
         for t in tasks:
             t.cancel()
         if tasks:
             with contextlib.suppress(Exception):
-                await asyncio.wait(tasks, timeout=timeout)
+                await asyncio.wait(tasks, timeout=grace_s)

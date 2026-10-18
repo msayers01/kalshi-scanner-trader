@@ -33,7 +33,9 @@ def parse_open_meteo(data: dict[str, Any], issued_ms: int) -> EnsembleForecast |
     if not times or not cols:
         return None
     members = np.array([[np.nan if v is None else float(v) for v in hourly[c]] for c in cols], dtype=float)
-    return EnsembleForecast(issued_ms=issued_ms, times_ms=np.array(times, dtype=np.int64) * 1000, members_f=members)
+    return EnsembleForecast(
+        issued_ms=issued_ms, times_ms=np.array(times, dtype=np.int64) * 1000, members_f=members
+    )
 
 
 class WeatherFeed:
@@ -60,7 +62,7 @@ class WeatherFeed:
 
     async def fetch_forecast(self, series: str) -> None:
         st = self.cfg.stations[series]
-        params = {
+        params: dict[str, Any] = {
             "latitude": st.lat,
             "longitude": st.lon,
             "hourly": "temperature_2m",
@@ -76,7 +78,9 @@ class WeatherFeed:
         fc = parse_open_meteo(r.json(), self.clock.now_ms())
         if fc is not None:
             self.store.forecasts[series] = fc
-            log.info("weather_forecast", series=series, members=fc.members_f.shape[0], hours=fc.members_f.shape[1])
+            log.info(
+                "weather_forecast", series=series, members=fc.members_f.shape[0], hours=fc.members_f.shape[1]
+            )
 
     async def fetch_observations(self, series: str) -> None:
         st = self.cfg.stations[series]
@@ -119,4 +123,3 @@ class WeatherFeed:
                     log.warning("weather_fetch_failed", series=series, error=str(exc))
             self.bus.publish(FeedHealth(self.clock.now_ms(), "weather", ok))
             await asyncio.sleep(30.0)
-

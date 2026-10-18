@@ -10,7 +10,12 @@ from scipy import stats
 from kst.core.types import MarketStatus, StrikeType
 from kst.domain.market import Market
 from kst.pricing.base import FairValue, combine_with_market, logit, sigmoid
-from kst.pricing.calibration import CalibratedPriorModel, CalibrationFit, CalibrationSet, fit_logistic_calibration
+from kst.pricing.calibration import (
+    CalibratedPriorModel,
+    CalibrationFit,
+    CalibrationSet,
+    fit_logistic_calibration,
+)
 from kst.pricing.crypto import CryptoDigitalModel, ReferenceStore, settlement_distribution, strike_probability
 from kst.pricing.volatility import SECONDS_PER_YEAR, BlendedVol, EWMAVariance
 from kst.pricing.weather import (
@@ -100,7 +105,9 @@ def test_student_t_fattens_tails_and_between() -> None:
     n = settlement_distribution(S, var, tau, dist="normal")
     t = settlement_distribution(S, var, tau, dist="student_t", nu=4)
     far = 103.0
-    assert strike_probability(t, StrikeType.GREATER, far, None) > strike_probability(n, StrikeType.GREATER, far, None)
+    assert strike_probability(t, StrikeType.GREATER, far, None) > strike_probability(
+        n, StrikeType.GREATER, far, None
+    )
     total = sum(strike_probability(n, StrikeType.BETWEEN, a, a + 1) for a in np.arange(90, 110, 1.0))
     below = strike_probability(n, StrikeType.LESS, None, 90.0)
     above = strike_probability(n, StrikeType.GREATER, 110.0, None)
@@ -109,8 +116,14 @@ def test_student_t_fattens_tails_and_between() -> None:
 
 def _crypto_market(strike_type: StrikeType, floor: float | None, cap: float | None, close_ms: int) -> Market:
     return Market(
-        ticker="KXBTCD-X", event_ticker="KXBTCD-X", series_ticker="KXBTCD", status=MarketStatus.ACTIVE,
-        strike_type=strike_type, floor_strike=floor, cap_strike=cap, close_time_ms=close_ms,
+        ticker="KXBTCD-X",
+        event_ticker="KXBTCD-X",
+        series_ticker="KXBTCD",
+        status=MarketStatus.ACTIVE,
+        strike_type=strike_type,
+        floor_strike=floor,
+        cap_strike=cap,
+        close_time_ms=close_ms,
     )
 
 
@@ -181,7 +194,14 @@ def test_weather_model() -> None:
     model = WeatherEnsembleModel(store, {"KXHIGHNY": ("America/New_York", 0.0)})
 
     def mk(st: StrikeType, f: float | None, c: float | None) -> Market:
-        return Market(ticker="t", event_ticker="KXHIGHNY-26OCT18", series_ticker="KXHIGHNY", strike_type=st, floor_strike=f, cap_strike=c)
+        return Market(
+            ticker="t",
+            event_ticker="KXHIGHNY-26OCT18",
+            series_ticker="KXHIGHNY",
+            strike_type=st,
+            floor_strike=f,
+            cap_strike=c,
+        )
 
     fv = model.fair_value(mk(StrikeType.GREATER, 63, None), start)
     assert fv is not None and 0.2 < fv.p < 0.8

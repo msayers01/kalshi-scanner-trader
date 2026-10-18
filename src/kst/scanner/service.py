@@ -152,7 +152,9 @@ class ScannerService:
             return b.best_bid, b.best_bid_qty, b.best_ask, b.best_ask_qty
         return m.yes_bid, m.yes_bid_size, m.yes_ask, m.yes_ask_size
 
-    def posterior(self, m: Market, bid: Price | None, ask: Price | None, now_ms: int) -> tuple[Posterior | None, str]:
+    def posterior(
+        self, m: Market, bid: Price | None, ask: Price | None, now_ms: int
+    ) -> tuple[Posterior | None, str]:
         fv = self.resolver.fair_value(m, now_ms)
         if fv is None:
             return None, ""
@@ -212,8 +214,13 @@ class ScannerService:
                 if len(mkts) < 2:
                     continue
                 found = detect_event_arbs(
-                    ev, mkts, self.top_of_book, self.catalog.fees, margin=self.arb_cfg.margin,
-                    rounding=self.rounding, exhaustive_allowlist=allow,
+                    ev,
+                    mkts,
+                    self.top_of_book,
+                    self.catalog.fees,
+                    margin=self.arb_cfg.margin,
+                    rounding=self.rounding,
+                    exhaustive_allowlist=allow,
                 )
                 for a in found:
                     arbs.append(a)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import gzip
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 
 import orjson
 
@@ -19,7 +19,7 @@ class Recorder:
     def __init__(self, directory: Path, flush_every: int = 500) -> None:
         self.dir = directory
         self.dir.mkdir(parents=True, exist_ok=True)
-        self._fh: IO[bytes] | None = None
+        self._fh: gzip.GzipFile | None = None
         self._day = ""
         self._n = 0
         self.flush_every = flush_every
@@ -29,7 +29,7 @@ class Recorder:
         day = ms_to_dt(ts_ms).strftime("%Y-%m-%d")
         if day != self._day:
             self.close()
-            self._fh = gzip.open(self.dir / f"{day}.jsonl.gz", "ab")
+            self._fh = gzip.open(self.dir / f"{day}.jsonl.gz", "ab")  # noqa: SIM115 — long-lived handle, closed in close()
             self._day = day
         assert self._fh is not None
         obj["t"] = ts_ms

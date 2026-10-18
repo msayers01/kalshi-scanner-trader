@@ -21,7 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_FILES = (REPO_ROOT / "config" / "default.yaml", REPO_ROOT / "config" / "local.yaml")
 
 _HOSTS = {
-    "prod": ("https://external-api.kalshi.com/trade-api/v2", "wss://external-api-ws.kalshi.com/trade-api/ws/v2"),
+    "prod": (
+        "https://external-api.kalshi.com/trade-api/v2",
+        "wss://external-api-ws.kalshi.com/trade-api/ws/v2",
+    ),
     "demo": (
         "https://external-api.demo.kalshi.co/trade-api/v2",
         "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2",
@@ -62,7 +65,9 @@ class KalshiCfg(BaseModel):
 
     @property
     def has_credentials(self) -> bool:
-        return self.key_id is not None and (self.private_key_path is not None or self.private_key_pem is not None)
+        return self.key_id is not None and (
+            self.private_key_path is not None or self.private_key_pem is not None
+        )
 
 
 class UniverseCfg(BaseModel):
@@ -91,7 +96,9 @@ class MarketDataCfg(BaseModel):
 
 class CryptoFeedCfg(BaseModel):
     enabled: bool = True
-    source: Literal["auto", "kalshi_cf", "coinbase"] = "auto"  # auto = Kalshi CF channel if keys, else Coinbase
+    source: Literal["auto", "kalshi_cf", "coinbase"] = (
+        "auto"  # auto = Kalshi CF channel if keys, else Coinbase
+    )
     # series prefix → CF Benchmarks index id (settlement index)
     series_index: dict[str, str] = Field(
         default_factory=lambda: {
@@ -137,17 +144,37 @@ class WeatherFeedCfg(BaseModel):
     enabled: bool = True
     refresh_s: float = 1800.0  # ensemble refresh (models update ~every 6 h; obs every ~5-60 min)
     obs_refresh_s: float = 300.0
-    models: list[str] = Field(default_factory=lambda: ["gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_global"])
+    models: list[str] = Field(
+        default_factory=lambda: ["gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_global"]
+    )
     user_agent: str = "kst-weather (contact: set KST_FEEDS__WEATHER__USER_AGENT)"
     stations: dict[str, StationCfg] = Field(
         default_factory=lambda: {
-            "KXHIGHNY": StationCfg(name="NYC Central Park", lat=40.7789, lon=-73.9692, nws_station="KNYC", tz="America/New_York"),
-            "KXHIGHCHI": StationCfg(name="Chicago Midway", lat=41.7868, lon=-87.7522, nws_station="KMDW", tz="America/Chicago"),
-            "KXHIGHMIA": StationCfg(name="Miami Intl", lat=25.7881, lon=-80.3169, nws_station="KMIA", tz="America/New_York"),
-            "KXHIGHAUS": StationCfg(name="Austin Bergstrom", lat=30.1945, lon=-97.6699, nws_station="KAUS", tz="America/Chicago"),
-            "KXHIGHLAX": StationCfg(name="Los Angeles Intl", lat=33.9382, lon=-118.3866, nws_station="KLAX", tz="America/Los_Angeles"),
-            "KXHIGHDEN": StationCfg(name="Denver Intl", lat=39.8466, lon=-104.6562, nws_station="KDEN", tz="America/Denver"),
-            "KXHIGHPHIL": StationCfg(name="Philadelphia Intl", lat=39.8733, lon=-75.2268, nws_station="KPHL", tz="America/New_York"),
+            "KXHIGHNY": StationCfg(
+                name="NYC Central Park", lat=40.7789, lon=-73.9692, nws_station="KNYC", tz="America/New_York"
+            ),
+            "KXHIGHCHI": StationCfg(
+                name="Chicago Midway", lat=41.7868, lon=-87.7522, nws_station="KMDW", tz="America/Chicago"
+            ),
+            "KXHIGHMIA": StationCfg(
+                name="Miami Intl", lat=25.7881, lon=-80.3169, nws_station="KMIA", tz="America/New_York"
+            ),
+            "KXHIGHAUS": StationCfg(
+                name="Austin Bergstrom", lat=30.1945, lon=-97.6699, nws_station="KAUS", tz="America/Chicago"
+            ),
+            "KXHIGHLAX": StationCfg(
+                name="Los Angeles Intl",
+                lat=33.9382,
+                lon=-118.3866,
+                nws_station="KLAX",
+                tz="America/Los_Angeles",
+            ),
+            "KXHIGHDEN": StationCfg(
+                name="Denver Intl", lat=39.8466, lon=-104.6562, nws_station="KDEN", tz="America/Denver"
+            ),
+            "KXHIGHPHIL": StationCfg(
+                name="Philadelphia Intl", lat=39.8733, lon=-75.2268, nws_station="KPHL", tz="America/New_York"
+            ),
         }
     )
 
@@ -225,8 +252,10 @@ class EdgeTakerCfg(BaseModel):
 
 class MarketMakerCfg(BaseModel):
     enabled: bool = False  # enable per series after paper validation
-    series: list[str] = Field(default_factory=list)  # empty = any market routed to MM
-    gamma: float = 0.1  # risk aversion
+    series: list[str] = Field(
+        default_factory=list
+    )  # series MM quotes even if modeled (unmodeled → calibrated prior)
+    gamma: float = 1.0  # risk aversion: inventory skew per unit = γ·σx²·τ (logit)
     kappa: float = 15.0  # fill-intensity decay (per logit unit)
     horizon_s: float = 3600.0
     min_edge: float = 0.01  # $ per contract after maker fee
@@ -296,18 +325,18 @@ class LLMBudgetCfg(BaseModel):
 
 class LLMCfg(BaseModel):
     mode: Literal["off", "advisory", "gate"] = "gate"
-    scope: Literal["unmodeled_only", "all"] = "unmodeled_only"
+    scope: Literal["unmodeled_only", "all"] = "all"  # all = every new-market entry needs an ENTER verdict
     provider: ProviderCfg = ProviderCfg()
     escalation: ProviderCfg | None = None  # optional cloud fallback
     escalate_on_unavailable: bool = False
     batch_size: int = 15
     min_batch: int = 5
-    max_wait_s: float = 120.0
-    min_interval_s: float = 60.0
+    max_wait_s: float = 20.0  # entry opportunities are perishable: don't hold a lone candidate long
+    min_interval_s: float = 20.0
     cache_ttl_s: float = 2700.0
     fallback: Literal["deny", "allow"] = "deny"
     budget: LLMBudgetCfg = LLMBudgetCfg()
-    candidates_per_scan: int = 30  # top-ranked unmodeled candidates considered for verdicts
+    bypass_strategies: list[str] = Field(default_factory=lambda: ["structural_arb"])  # never gated (riskless)
 
 
 class DiscordNotifyCfg(BaseModel):
@@ -335,7 +364,9 @@ class WebCfg(BaseModel):
     host: str = "127.0.0.1"  # non-local bind REQUIRES api_token
     port: int = 8787
     api_token: SecretStr | None = None  # env: KST_WEB__API_TOKEN
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"])
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
+    )
     serve_ui: bool = True
     push_hz: float = 10.0  # max WS flush rate per client
 

@@ -65,7 +65,15 @@ def configure_logging(level: str = "INFO", log_dir: Path | None = None, json_con
         )
         root.addHandler(fh)
 
-    for noisy in ("httpx", "httpcore", "websockets", "discord", "uvicorn.access", "aiosqlite", "sqlalchemy.engine"):
+    for noisy in (
+        "httpx",
+        "httpcore",
+        "websockets",
+        "discord",
+        "uvicorn.access",
+        "aiosqlite",
+        "sqlalchemy.engine",
+    ):
         logging.getLogger(noisy).setLevel(max(lvl, logging.WARNING))
 
     structlog.configure(

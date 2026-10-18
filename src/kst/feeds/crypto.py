@@ -78,9 +78,9 @@ class CryptoFeed:
         data = body.get("data")
         try:
             frame = orjson.loads(data) if isinstance(data, str | bytes) else (data or {})
-            value = float(frame.get("value"))
+            value = float(frame["value"])
             ts = int(frame.get("time") or body.get("received_at") or self.clock.now_ms())
-        except (TypeError, ValueError, orjson.JSONDecodeError):
+        except (KeyError, TypeError, ValueError, orjson.JSONDecodeError):
             return
         self._emit(idx, value, ts, "kalshi_cf")
 
@@ -92,7 +92,9 @@ class CryptoFeed:
             if not product:
                 continue
             try:
-                r = await self.http.get(f"{COINBASE_REST}/products/{product}/candles", params={"granularity": 60})
+                r = await self.http.get(
+                    f"{COINBASE_REST}/products/{product}/candles", params={"granularity": 60}
+                )
                 r.raise_for_status()
                 rows = sorted(r.json(), key=lambda x: x[0])  # [time, low, high, open, close, volume]
                 closes = [float(x[4]) for x in rows]
@@ -100,7 +102,12 @@ class CryptoFeed:
                 st.vol.seed_from_closes(closes, 60.0)
                 if self.source == "coinbase" and rows:
                     self._emit(idx, closes[-1], int(rows[-1][0]) * 1000, "coinbase")
-                log.info("crypto_vol_seeded", index=idx, n=len(closes), sigma=getattr(st.vol.estimate(), "sigma_annual", None))
+                log.info(
+                    "crypto_vol_seeded",
+                    index=idx,
+                    n=len(closes),
+                    sigma=getattr(st.vol.estimate(), "sigma_annual", None),
+                )
             except Exception as exc:
                 log.warning("crypto_vol_seed_failed", index=idx, error=str(exc))
 
@@ -114,7 +121,11 @@ class CryptoFeed:
         while True:
             try:
                 async with websockets.connect(COINBASE_WS, ping_interval=20, open_timeout=15) as ws:
-                    await ws.send(orjson.dumps({"type": "subscribe", "product_ids": sorted(prod_to_idx), "channels": ["ticker"]}).decode())
+                    await ws.send(
+                        orjson.dumps(
+                            {"type": "subscribe", "product_ids": sorted(prod_to_idx), "channels": ["ticker"]}
+                        ).decode()
+                    )
                     self.bus.publish(FeedHealth(self.clock.now_ms(), "crypto:coinbase", True))
                     backoff = 1.0
                     async for raw in ws:

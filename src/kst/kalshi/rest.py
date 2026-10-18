@@ -37,7 +37,7 @@ class KalshiApiError(RuntimeError):
         return self.status == 409
 
 
-class KalshiAuthRequired(RuntimeError):
+class KalshiAuthRequiredError(RuntimeError):
     pass
 
 
@@ -89,7 +89,7 @@ class KalshiRest:
     ) -> dict[str, Any]:
         method = method.upper()
         if auth and self.signer is None:
-            raise KalshiAuthRequired(f"{method} {path} needs API credentials")
+            raise KalshiAuthRequiredError(f"{method} {path} needs API credentials")
         bucket = bucket or (self.limiter.read if method == "GET" else self.limiter.write)
         url = self.base_url + path
         content = orjson.dumps(body) if body is not None else None
@@ -100,7 +100,9 @@ class KalshiRest:
             if self.signer is not None and (auth or path.startswith("/portfolio")):
                 headers.update(self.signer.headers(method, self._base_path + path))
             try:
-                resp = await self._client.request(method, url, params=params, content=content, headers=headers)
+                resp = await self._client.request(
+                    method, url, params=params, content=content, headers=headers
+                )
             except (httpx.TransportError, httpx.TimeoutException) as exc:
                 attempt += 1
                 # Writes are only retried because client_order_id makes creates idempotent (409 on dup).
@@ -140,7 +142,13 @@ class KalshiRest:
         raise KalshiApiError(resp.status_code, code, message, path)
 
     async def paginate(
-        self, path: str, key: str, params: dict[str, Any] | None = None, *, auth: bool = False, max_pages: int = 500
+        self,
+        path: str,
+        key: str,
+        params: dict[str, Any] | None = None,
+        *,
+        auth: bool = False,
+        max_pages: int = 500,
     ) -> AsyncIterator[dict[str, Any]]:
         p = dict(params or {})
         for _ in range(max_pages):
@@ -163,7 +171,9 @@ class KalshiRest:
     async def series(self, series_ticker: str) -> dict[str, Any]:
         return (await self.request("GET", f"/series/{series_ticker}")).get("series") or {}
 
-    def events(self, *, status: str = "open", nested_markets: bool = True, **params: Any) -> AsyncIterator[dict[str, Any]]:
+    def events(
+        self, *, status: str = "open", nested_markets: bool = True, **params: Any
+    ) -> AsyncIterator[dict[str, Any]]:
         q = {"status": status, "with_nested_markets": str(nested_markets).lower(), "limit": 200, **params}
         return self.paginate("/events", "events", q)
 
@@ -175,7 +185,9 @@ class KalshiRest:
         return (await self.request("GET", f"/markets/{ticker}")).get("market") or {}
 
     async def orderbook(self, ticker: str, depth: int = 0) -> dict[str, Any]:
-        return await self.request("GET", f"/markets/{ticker}/orderbook", params={"depth": depth} if depth else None)
+        return await self.request(
+            "GET", f"/markets/{ticker}/orderbook", params={"depth": depth} if depth else None
+        )
 
     async def orderbooks(self, tickers: list[str]) -> list[dict[str, Any]]:
         """Up to 100 books per call. Returns [{"ticker", "orderbook_fp"}]."""
@@ -213,12 +225,20 @@ class KalshiRest:
         return [
             p
             async for p in self.paginate(
-                "/portfolio/positions", "market_positions", {"limit": 1000, "count_filter": "position"}, auth=True
+                "/portfolio/positions",
+                "market_positions",
+                {"limit": 1000, "count_filter": "position"},
+                auth=True,
             )
         ]
 
     async def open_orders(self) -> list[dict[str, Any]]:
-        return [o async for o in self.paginate("/portfolio/orders", "orders", {"status": "resting", "limit": 1000}, auth=True)]
+        return [
+            o
+            async for o in self.paginate(
+                "/portfolio/orders", "orders", {"status": "resting", "limit": 1000}, auth=True
+            )
+        ]
 
     async def fills(self, min_ts: int | None = None) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"limit": 1000}
@@ -293,7 +313,12 @@ class KalshiRest:
         expiration_ts: int | None = None,
     ) -> dict[str, Any]:
         """`total_qty` = already-filled + desired remaining (Kalshi semantics)."""
-        body: dict[str, Any] = {"ticker": ticker, "side": side.value, "price": price_to_str(price), "count": qty_to_str(total_qty)}
+        body: dict[str, Any] = {
+            "ticker": ticker,
+            "side": side.value,
+            "price": price_to_str(price),
+            "count": qty_to_str(total_qty),
+        }
         if expiration_ts:
             body["expiration_time"] = int(expiration_ts)
         return await self.request("POST", f"/portfolio/events/orders/{order_id}/amend", body=body, auth=True)

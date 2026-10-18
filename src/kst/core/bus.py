@@ -43,7 +43,9 @@ class Subscription:
             self._buf.popleft()
             self.dropped += 1
             if self.dropped in (1, 100) or self.dropped % 1000 == 0:
-                log.warning("bus_subscription_overflow", dropped=self.dropped, types=[t.__name__ for t in self._types])
+                log.warning(
+                    "bus_subscription_overflow", dropped=self.dropped, types=[t.__name__ for t in self._types]
+                )
         self._buf.append(evt)
         if self._waiter is not None and not self._waiter.done():
             self._waiter.set_result(None)
@@ -110,6 +112,10 @@ class EventBus:
                 try:
                     h(evt)
                 except Exception:
-                    log.exception("bus_handler_error", event_type=type(evt).__name__, handler=getattr(h, "__qualname__", repr(h)))
+                    log.exception(
+                        "bus_handler_error",
+                        event_type=type(evt).__name__,
+                        handler=getattr(h, "__qualname__", repr(h)),
+                    )
             for s in tuple(self._streams.get(cls, ())):
                 s._push(evt)

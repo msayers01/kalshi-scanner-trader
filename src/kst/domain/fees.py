@@ -42,14 +42,14 @@ ZERO_FEES = FeeSchedule(0.0, 0.0)
 
 
 class FeeModel:
-    def __init__(self, taker_coef: float = 0.07, maker_ratio: float = 0.25, combo_maker_ratio: float = 0.5) -> None:
+    def __init__(
+        self, taker_coef: float = 0.07, maker_ratio: float = 0.25, combo_maker_ratio: float = 0.5
+    ) -> None:
         self.taker_coef = taker_coef
         self.maker_ratio = maker_ratio
         self.combo_maker_ratio = combo_maker_ratio
 
-    def schedule(
-        self, fee_type: str, fee_multiplier: float = 1.0, *, waived: bool = False
-    ) -> FeeSchedule:
+    def schedule(self, fee_type: str, fee_multiplier: float = 1.0, *, waived: bool = False) -> FeeSchedule:
         if waived:
             return ZERO_FEES
         taker = self.taker_coef * fee_multiplier

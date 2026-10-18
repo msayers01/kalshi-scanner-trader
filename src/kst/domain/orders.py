@@ -11,9 +11,17 @@ from kst.core.types import BookSide, OrderStatus, TimeInForce
 # Legal order state transitions. Anything else is a bug (or an out-of-order exchange message we ignore).
 _TRANSITIONS: dict[OrderStatus, frozenset[OrderStatus]] = {
     OrderStatus.PENDING_NEW: frozenset(
-        {OrderStatus.RESTING, OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.PENDING_CANCEL}
+        {
+            OrderStatus.RESTING,
+            OrderStatus.FILLED,
+            OrderStatus.CANCELED,
+            OrderStatus.REJECTED,
+            OrderStatus.PENDING_CANCEL,
+        }
     ),
-    OrderStatus.RESTING: frozenset({OrderStatus.RESTING, OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.PENDING_CANCEL}),
+    OrderStatus.RESTING: frozenset(
+        {OrderStatus.RESTING, OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.PENDING_CANCEL}
+    ),
     OrderStatus.PENDING_CANCEL: frozenset({OrderStatus.CANCELED, OrderStatus.FILLED, OrderStatus.RESTING}),
     OrderStatus.FILLED: frozenset(),
     OrderStatus.CANCELED: frozenset(),
@@ -21,21 +29,32 @@ _TRANSITIONS: dict[OrderStatus, frozenset[OrderStatus]] = {
 }
 
 
-class IllegalTransition(RuntimeError):
+class IllegalTransitionError(RuntimeError):
     pass
 
 
+# Short, reversible strategy codes embedded in client_order_id (attribution survives restarts).
+STRATEGY_CODES = {
+    "edge_taker": "et",
+    "market_maker": "mm",
+    "structural_arb": "arb",
+    "manual": "man",
+    "flatten": "flat",
+}
+_CODE_TO_STRATEGY = {v: k for k, v in STRATEGY_CODES.items()}
+
+
 def new_client_order_id(strategy: str) -> str:
-    """`kst-<strategy>-<uuid12>` — the prefix lets us attribute exchange orders/fills after a restart."""
-    tag = "".join(c for c in strategy if c.isalnum())[:12] or "manual"
-    return f"kst-{tag}-{uuid.uuid4().hex[:12]}"
+    """`kst-<code>-<uuid12>` — the prefix lets us attribute exchange orders/fills after a restart."""
+    code = STRATEGY_CODES.get(strategy) or ("".join(c for c in strategy if c.isalnum())[:8] or "man")
+    return f"kst-{code}-{uuid.uuid4().hex[:12]}"
 
 
 def strategy_from_client_order_id(coid: str | None) -> str:
     if coid and coid.startswith("kst-"):
         parts = coid.split("-")
         if len(parts) >= 3:
-            return parts[1]
+            return _CODE_TO_STRATEGY.get(parts[1], parts[1])
     return "external"
 
 
@@ -82,7 +101,7 @@ class Order:
         if new not in _TRANSITIONS[self.status]:
             if self.status.is_terminal:
                 return False  # late message for a finished order — ignore
-            raise IllegalTransition(f"{self.client_order_id}: {self.status} → {new}")
+            raise IllegalTransitionError(f"{self.client_order_id}: {self.status} → {new}")
         self.status = new
         self.updated_ms = ts_ms
         return True
