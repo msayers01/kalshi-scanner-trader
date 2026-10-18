@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { linePaths, foldLive, nearest, openAt, type Pt } from "../equityGeometry";
+import { foldLive, linePaths, nearest, openAt, timeScale, type Pt } from "../equityGeometry";
 import { usd } from "../format";
 import { useStore } from "../store";
 import type { EquityRange, EquitySeries } from "../types";
@@ -37,6 +37,8 @@ const UNITS = [
 ];
 const PREF_KEY = "kst.chart";
 const PAD_Y = 14;
+const AXIS_H = 16; // room for time labels under the plot
+const GAP_PX = 28; // width of a collapsed engine-off gap
 const REFETCH_MS = 30_000;
 
 interface Prefs {
@@ -156,7 +158,9 @@ export function PortfolioChart() {
 
   const geo = useMemo(() => {
     if (!series || points.length < 2) return null;
-    const t0 = Math.min(series.start_ms, points[0][0]);
+    // Start at the first point: the server already pins one at the window's edge when earlier data exists,
+    // so this only trims days before kst ever recorded anything (no empty "off 6d" band on 1W).
+    const t0 = points[0][0];
     const t1 = Math.max(points[points.length - 1][0], t0 + 1000);
     const visibleDays = days.filter((d) => d.start_ms <= t1);
     const vals = points.map((p) => p[1]);
@@ -168,17 +172,33 @@ export function PortfolioChart() {
       hiV += 0.5;
     }
     const { w, h } = size;
-    const x = (t: number) => ((t - t0) / (t1 - t0)) * (w - 4) + 2;
-    const y = (v: number) => PAD_Y + (1 - (v - lo) / (hiV - lo)) * (h - 2 * PAD_Y);
     const gapMs = Math.max(3 * (ivMs ?? 0), 180_000);
+    // Engine-off spans collapse to a narrow marked break; time is linear only inside runs of data.
+    // Only real outages collapse (≥ 10 min); shorter holes stay to scale as a faint dotted connector.
+    const scale = timeScale(points, t0, t1, 2, w - 2, Math.max(gapMs, 600_000), GAP_PX);
+    const x = scale.x;
+    const plotH = h - AXIS_H;
+    const y = (v: number) => PAD_Y + (1 - (v - lo) / (hiV - lo)) * (plotH - 2 * PAD_Y);
     const paths = linePaths(points, visibleDays, baseline, x, y, gapMs);
+    const gaps = scale.segs.filter((s) => s.gap && s.x1 - s.x0 >= 2);
+    // Time labels: the start of each run of data, and the latest point; skip any that would collide.
+    const labels: { x: number; text: string }[] = [];
+    const runs = scale.segs.filter((s) => !s.gap);
+    const fineLbl = ivMs === null || ivMs < 60_000;
+    for (const t of [...runs.map((s) => s.t0), t1]) {
+      const px = x(t);
+      const text = axisStamp(t, t1 - t0, fineLbl);
+      const prev = labels[labels.length - 1];
+      if (prev && (px - prev.x < 72 || prev.text === text)) continue;
+      labels.push({ x: px, text });
+    }
     // Dashed opening-balance step: one horizontal run per trading day, plus faint separators at midnights.
     const opens = visibleDays.map((d, i) => {
       const a = Math.max(d.start_ms, t0);
       const b = Math.min(visibleDays[i + 1]?.start_ms ?? t1, t1);
       return { x1: x(a), x2: x(b), y: y(d.open), open: d.open, sep: d.start_ms > t0 ? x(d.start_ms) : null };
     });
-    return { x, y, w, h, paths, opens, t0, t1 };
+    return { x, y, w, h, plotH, paths, opens, gaps, labels, scale };
   }, [series, version, size, days, baseline, ivMs]); // `points` is a ref: `version` tracks its mutations
 
   const tone = (() => {
@@ -190,8 +210,8 @@ export function PortfolioChart() {
   function onMove(e: React.PointerEvent<SVGSVGElement>) {
     if (!geo) return;
     const r = e.currentTarget.getBoundingClientRect();
-    const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-    setHoverT(geo.t0 + f * (geo.t1 - geo.t0));
+    const px = ((e.clientX - r.left) / r.width) * geo.w;
+    setHoverT(geo.scale.t(px));
   }
 
   const setP = (p: Partial<Prefs>) => setPrefs((cur) => ({ ...cur, ...p }));
@@ -222,11 +242,34 @@ export function PortfolioChart() {
             onPointerMove={onMove}
             onPointerLeave={() => setHoverT(null)}
           >
+            {geo.gaps.map((g, i) => (
+              <g key={`g${i}`}>
+                <rect className="pchart-gapband" x={g.x0} y={0} width={g.x1 - g.x0} height={geo.plotH}>
+                  <title>{`No data ${duration(g.t1 - g.t0)} (engine off) · ${new Date(g.t0).toLocaleString()} → ${new Date(g.t1).toLocaleString()}`}</title>
+                </rect>
+                {g.x1 - g.x0 >= 14 && (
+                  <text className="pchart-gaplabel" x={(g.x0 + g.x1) / 2} y={geo.plotH - 4} textAnchor="middle">
+                    {`off ${duration(g.t1 - g.t0)}`}
+                  </text>
+                )}
+              </g>
+            ))}
             {geo.opens.map((o, i) => (
               <g key={i}>
-                {o.sep !== null && <line className="pchart-daysep" x1={o.sep} x2={o.sep} y1={0} y2={geo.h} />}
+                {o.sep !== null && <line className="pchart-daysep" x1={o.sep} x2={o.sep} y1={0} y2={geo.plotH} />}
                 <line className="pchart-base" x1={o.x1} x2={o.x2} y1={o.y} y2={o.y} />
               </g>
+            ))}
+            {geo.labels.map((l, i) => (
+              <text
+                key={`t${i}`}
+                className="pchart-axis"
+                x={Math.min(Math.max(l.x, 2), geo.w - 2)}
+                y={geo.h - 3}
+                textAnchor={i === 0 ? "start" : i === geo.labels.length - 1 ? "end" : "middle"}
+              >
+                {l.text}
+              </text>
             ))}
             {lastOpen && (
               <text className="pchart-openlabel" x={geo.w - 4} y={lastOpen.y - 4} textAnchor="end">
@@ -238,7 +281,7 @@ export function PortfolioChart() {
             <path className="pchart-line neg" d={geo.paths.neg} />
             {shown ? (
               <g>
-                <line className="pchart-cross" x1={geo.x(shown[0])} x2={geo.x(shown[0])} y1={0} y2={geo.h} />
+                <line className="pchart-cross" x1={geo.x(shown[0])} x2={geo.x(shown[0])} y1={0} y2={geo.plotH} />
                 <circle className={`pchart-dot ${shown[1] >= (openAt(days, shown[0], baseline) ?? shown[1]) ? "pos" : "neg"}`} cx={geo.x(shown[0])} cy={geo.y(shown[1])} r={4} />
               </g>
             ) : (
@@ -292,7 +335,7 @@ export function PortfolioChart() {
           )}
           {series && (prefs.interval === "auto" || series.note) && (
             <span className="muted small" title={series.note || undefined}>
-              {series.note ? `showing ${series.interval_label}` : `= ${series.interval_label}`}
+              {series.note ? `showing ${series.interval_label}` : series.interval_ms === null ? "every point" : `= ${series.interval_label}`}
             </span>
           )}
         </div>
@@ -316,6 +359,23 @@ function LiveTag({ at, version }: { at: React.RefObject<number>; version: number
       ● {stale ? "waiting" : "live"} {age !== null ? `${age < 10 ? age.toFixed(1) : Math.round(age)}s` : ""}
     </span>
   );
+}
+
+function duration(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  if (m < 60) return `${Math.max(m, 1)}m`;
+  const h = ms / 3_600_000;
+  if (h < 48) return `${h < 10 ? h.toFixed(1).replace(/\.0$/, "") : Math.round(h)}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
+/** Axis label: time of day for spans under ~2 days, otherwise the date. */
+function axisStamp(ms: number, spanMs: number, fine: boolean): string {
+  const d = new Date(ms);
+  if (spanMs <= 2 * 86_400_000) {
+    return d.toLocaleTimeString([], fine && spanMs < 3_600_000 ? { hour: "numeric", minute: "2-digit", second: "2-digit" } : { hour: "numeric", minute: "2-digit" });
+  }
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function stamp(ms: number, range: EquityRange, fine: boolean): string {

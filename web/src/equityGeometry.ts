@@ -34,6 +34,73 @@ export function nearest(points: Pt[], t: number): number {
   return lo;
 }
 
+export interface Seg {
+  t0: number;
+  t1: number;
+  x0: number;
+  x1: number;
+  gap: boolean; // a span with no data (engine off), squeezed to a fixed width
+}
+
+export interface TimeScale {
+  x: (t: number) => number;
+  t: (x: number) => number;
+  segs: Seg[];
+}
+
+/** Time → x with engine-off gaps (> gapMs with no points, including before the first / after the last
+ *  point) collapsed to `gapPx` each, like Robinhood skipping closed hours. Inside each run of data, x is
+ *  linear in time; the remaining width is shared between runs in proportion to their duration. */
+export function timeScale(points: Pt[], t0: number, t1: number, x0: number, x1: number, gapMs: number, gapPx: number): TimeScale {
+  const spans: { t0: number; t1: number; gap: boolean }[] = [];
+  let runStart = t0;
+  const edges = [t0, ...points.map((p) => p[0]).filter((t) => t > t0 && t < t1), t1];
+  for (let i = 1; i < edges.length; i++) {
+    const a = edges[i - 1];
+    const b = edges[i];
+    if (b - a > gapMs) {
+      if (a > runStart) spans.push({ t0: runStart, t1: a, gap: false });
+      spans.push({ t0: a, t1: b, gap: true });
+      runStart = b;
+    }
+  }
+  if (t1 > runStart) spans.push({ t0: runStart, t1: t1, gap: false });
+  const nGaps = spans.filter((s) => s.gap).length;
+  const runMs = spans.filter((s) => !s.gap).reduce((n, s) => n + (s.t1 - s.t0), 0);
+  const width = x1 - x0;
+  const gp = runMs > 0 ? Math.min(gapPx, (width * 0.4) / Math.max(nGaps, 1)) : width / Math.max(nGaps, 1);
+  const runPx = width - gp * nGaps;
+  const segs: Seg[] = [];
+  let x = x0;
+  for (const s of spans) {
+    const w = s.gap ? gp : runMs > 0 ? ((s.t1 - s.t0) / runMs) * runPx : 0;
+    segs.push({ t0: s.t0, t1: s.t1, x0: x, x1: x + w, gap: s.gap });
+    x += w;
+  }
+  if (!segs.length) segs.push({ t0, t1, x0, x1, gap: false });
+  const find = (v: number, key: "t" | "x") => {
+    let lo = 0;
+    let hi = segs.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((key === "t" ? segs[mid].t1 : segs[mid].x1) < v) lo = mid + 1;
+      else hi = mid;
+    }
+    return segs[lo];
+  };
+  return {
+    segs,
+    x: (t) => {
+      const s = find(t, "t");
+      return s.t1 === s.t0 ? s.x0 : s.x0 + ((Math.min(Math.max(t, s.t0), s.t1) - s.t0) / (s.t1 - s.t0)) * (s.x1 - s.x0);
+    },
+    t: (px) => {
+      const s = find(px, "x");
+      return s.x1 === s.x0 ? s.t0 : s.t0 + ((Math.min(Math.max(px, s.x0), s.x1) - s.x0) / (s.x1 - s.x0)) * (s.t1 - s.t0);
+    },
+  };
+}
+
 export interface Paths {
   pos: string; // at/above that day's open
   neg: string; // below it
