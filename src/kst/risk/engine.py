@@ -143,6 +143,8 @@ class RiskEngine:
         live_here = []
         if oms is not None:
             for o in oms.live_orders():
+                if p.replaces and o.client_order_id == p.replaces:
+                    continue  # being amended/replaced by this proposal
                 pq = pf.positions[o.ticker].qty if pf is not None and o.ticker in pf.positions else 0
                 prop = OrderProposal(o.ticker, o.side, o.price, o.remaining)
                 add = prop.added_exposure_micros(pq)
@@ -188,8 +190,13 @@ class RiskEngine:
             blocked_series=frozenset(self.cfg.blocked_series),
             allowed_categories=self.allowed_categories,
             in_blackout=self._in_blackout(category, now),
+            book_mid=self._book_mid(p.ticker, now),
             own_live_orders=live_here,
         )
+
+    def _book_mid(self, ticker: str, now_ms: int) -> float | None:
+        b = self.md.book(ticker)
+        return b.mid() if b is not None and self.md.is_fresh(ticker, now_ms) else None
 
     # ------------------------------------------------------------------ check API
 

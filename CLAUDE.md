@@ -29,14 +29,15 @@ uv run kst check                  # validate config, keys, connectivity
 uv run kst scan                   # scanner only (web UI + Discord, no auto orders)
 uv run kst run                    # full system (paper mode by default)
 uv run kst llm-packet --top 20    # print an LLM decision packet
-uv run pytest -q                  # tests
+uv run pytest -q                  # tests (no network; ~5 s)
 uv run ruff check . && uv run ruff format --check .
 uv run mypy src
 cd web && npm ci && npm run build # UI → web/dist (served by the backend at /)
 cd web && npm run dev             # UI dev server on :5173, proxies to :8787
 ```
 
-`make help` lists the same shortcuts.
+`make help` lists the same shortcuts. CI (`.github/workflows/ci.yml`) runs
+ruff, ruff format, mypy, pytest, and the web build, so run them before pushing.
 
 ## Hard rules (do not break)
 
@@ -72,12 +73,12 @@ cd web && npm run dev             # UI dev server on :5173, proxies to :8787
 
 ```
 src/kst/core/         fixedpoint, types, events (all bus event dataclasses), bus, clock, supervisor, logging
-src/kst/domain/       Market/Event/Series, PriceGrid, OrderBook, Order (+FSM), Position, FeeModel
+src/kst/domain/       Market/Event/Series, PriceGrid, OrderBook, Order (+FSM), Position, FeeModel, views (protocols)
 src/kst/kalshi/       auth, ratelimit, rest (KalshiRest), ws (KalshiWs), parse (JSON→domain)
-src/kst/marketdata/   catalog (universe), service (books + sources: ws | poll | replay), recorder
+src/kst/marketdata/   catalog (universe), service (books + sources: ws | poll), recorder
 src/kst/feeds/        crypto (CF Benchmarks via Kalshi WS, Coinbase fallback), weather (Open-Meteo, NWS)
 src/kst/pricing/      base (FairValue, combine_with_market), crypto, volatility, weather, calibration, resolver
-src/kst/scanner/      features, signals (arb/edge/mm), service (ScanSnapshot)
+src/kst/scanner/      signals (arb, taker edge), service (chunked async scan → ScanSnapshot)
 src/kst/strategies/   base, sizing (Kelly), exits, structural_arb, edge_taker, market_maker, router
 src/kst/risk/         limits (RiskLimits), checks (chain), engine (breakers, counters)
 src/kst/execution/    broker (protocol), paper, live, oms (OrderManager)
@@ -85,10 +86,12 @@ src/kst/portfolio/    service (positions/equity/P&L), reports (daily summary + l
 src/kst/llm/          packet, providers, gate
 src/kst/engine/       trader (AutoTrader loop), control (ControlService), state (EngineState store)
 src/kst/persistence/  db, tables, repo (write-behind)
-src/kst/api/          FastAPI app, routes, ws hub, schemas, security
-src/kst/discord_bot/  bot, views (buttons), notifier, formatting
+src/kst/api/          app (routes + auth + static UI), hub (WS push), serialize
+src/kst/discord_bot/  bot (slash commands, ControlPanel view, notifier), formatting (embeds)
+src/kst/backtest/     empty: replay/backtester is roadmap
 src/kst/app.py        composition root: read this to see how everything is wired
-web/src/              React UI: store.ts (Zustand, WS-driven), components/
+web/src/              React UI: store.ts (Zustand, WS-driven), api.ts (REST + token), components/
+tests/                conftest.py `Harness` = fully wired paper engine with no network; use it for engine tests
 ```
 
 ## Conventions
@@ -121,3 +124,18 @@ web/src/              React UI: store.ts (Zustand, WS-driven), components/
   local time during DST.
 - Kalshi's cancel-all can also cancel orders placed in the following minute.
   After a kill, do not re-quote immediately.
+- **Never pass `event=` to a structlog call.** It collides with the log event
+  name. Use `event_type=` or `event_ticker=`.
+- **Live books contain our own orders; paper books don't.** Anything that prices
+  off the touch must use `StrategyContext.touch(side)`, or a quote will
+  penny-jump itself every tick.
+- Size **every** order, exits included, through the per-order caps
+  (`ctx.clip_qty`, `plan_exit(max_qty=, max_usd=)`). Otherwise MaxOrderSize
+  rejects it on every tick.
+- A re-quote's risk check must pass `replaces=<coid>`, or the order being
+  replaced is counted against the position and exposure room.
+- Unauthenticated, large `/markets` pages get 429s. The catalog pages by
+  close-time horizon with `universe.page_delay_s` between pages.
+- Before trusting a strategy change, run paper against live data for a few
+  minutes and look at the `orders` table: churn (accepted orders per minute) and
+  `reject_reason` counts. Rejections in a loop mean a sizing or state bug.

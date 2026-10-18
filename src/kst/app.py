@@ -186,6 +186,9 @@ class Application:
                     max_ref_age_s=cp.max_ref_age_s,
                     min_samples=cp.min_samples,
                     excess_kurtosis_1h=cp.excess_kurtosis_1h,
+                    peers=lambda m: self.catalog.event_markets(m.event_ticker),
+                    implied_weight=cp.implied_weight,
+                    max_fit_spread=cp.max_fit_spread,
                 )
             )
         if s.feeds.weather.enabled:
@@ -214,6 +217,7 @@ class Application:
             self.bus,
             self.clock,
             rounding=s.fees.rounding_allowance,
+            max_disagreement=s.strategies.edge_taker.max_disagreement,
         )
         provider = build_provider(s.llm.provider) if s.llm.mode != "off" else None
         escalation = build_provider(s.llm.escalation) if s.llm.escalation is not None else None

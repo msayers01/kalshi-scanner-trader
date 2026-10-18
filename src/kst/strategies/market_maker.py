@@ -98,6 +98,8 @@ class MarketMaker(Strategy):
                     m.grid,
                     premium=self.cfg.min_edge,
                     rounding=ctx.rounding,
+                    max_qty=ctx.max_order_qty,
+                    max_usd=ctx.max_order_usd,
                 )
                 if ex.quote is not None:
                     d.quotes.append(ex.quote)

@@ -28,6 +28,7 @@ class OrderProposal:
     basket_id: str = ""
     manual: bool = False
     flatten: bool = False  # explicit operator flatten: the only orders allowed while KILLED
+    replaces: str = ""  # client_order_id this order amends/replaces (excluded from resting exposure)
 
     def opening_qty(self, pos_qty: int) -> int:
         """Contracts (Qty) of this order that open/increase exposure given the current signed position."""
@@ -71,6 +72,7 @@ class RiskContext:
     blocked_series: frozenset[str] = frozenset()
     allowed_categories: frozenset[str] = frozenset()  # empty = all
     in_blackout: bool = False
+    book_mid: float | None = None  # live (fresh) order-book mid, dollars
     own_live_orders: list[Order] = field(default_factory=list)  # all strategies, this market
 
 
@@ -138,7 +140,7 @@ def price_on_grid(p: OrderProposal, c: RiskContext) -> CheckResult | None:
 
 
 def fat_finger(p: OrderProposal, c: RiskContext) -> CheckResult | None:
-    ref = p.reference_price
+    ref = p.reference_price if p.reference_price is not None else c.book_mid
     if ref is None and c.market is not None:
         ref = c.market.mid
     if ref is None:
@@ -163,7 +165,10 @@ def max_order_size(p: OrderProposal, c: RiskContext) -> CheckResult | None:
 
 
 def order_rate(p: OrderProposal, c: RiskContext) -> CheckResult | None:
-    if c.orders_last_minute >= c.limits.max_orders_per_minute:
+    cap = c.limits.max_orders_per_minute
+    if p.is_risk_reducing(c.pos_qty):
+        cap *= 2  # exits keep working when entries hit the limit; 2× still stops a runaway loop
+    if c.orders_last_minute >= cap:
         return _fail("OrderRate", f"{c.orders_last_minute} orders in the last minute")
     return None
 

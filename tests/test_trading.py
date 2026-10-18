@@ -168,3 +168,46 @@ async def test_size_limits(hs: Harness, limit_field: str) -> None:
     hs.set_book("M", bids=[(0.40, 50)], asks=[(0.42, 50)])
     o = await hs.oms.take(_take("M", BookSide.BID, 0.42, 10), "edge_taker")
     assert o.status is OrderStatus.REJECTED
+
+
+async def test_order_rate_still_lets_exits_through(hs: Harness) -> None:
+    hs.risk.limits = hs.risk.limits.patch({"max_orders_per_minute": 2})[0]
+    hs.add_market("M")
+    hs.set_book("M", bids=[(0.40, 50)], asks=[(0.42, 50)])
+    for _ in range(2):
+        assert (
+            await hs.oms.take(_take("M", BookSide.BID, 0.42, 5), "edge_taker")
+        ).status is OrderStatus.FILLED
+    blocked = await hs.oms.take(_take("M", BookSide.BID, 0.42, 5), "edge_taker")
+    assert blocked.status is OrderStatus.REJECTED and "OrderRate" in blocked.reject_reason
+    out = await hs.oms.take(_take("M", BookSide.ASK, 0.40, 5), "edge_taker")  # risk-reducing
+    assert out.status is OrderStatus.FILLED
+
+
+async def test_requote_does_not_count_the_order_it_replaces(hs: Harness) -> None:
+    hs.risk.limits = hs.risk.limits.patch({"max_position_contracts": 10})[0]
+    hs.add_market("M")
+    hs.set_book("M", bids=[(0.30, 5)], asks=[(0.50, 5)])
+    await hs.oms.reconcile(
+        "edge_taker", "M", [QuoteTarget("M", "entry_bid", BookSide.BID, Price(3800), Qty(1000))]
+    )
+    (o,) = hs.oms.live_orders("M")
+    await hs.oms.reconcile(
+        "edge_taker", "M", [QuoteTarget("M", "entry_bid", BookSide.BID, Price(3900), Qty(1000))]
+    )
+    assert hs.oms.live_orders("M") == [o] and o.price == 3900  # amended in place, not 10 + 10 > 10
+
+
+async def test_rejected_quote_slot_backs_off(hs: Harness) -> None:
+    hs.risk.limits = hs.risk.limits.patch({"max_position_contracts": 1})[0]
+    hs.add_market("M")
+    hs.set_book("M", bids=[(0.30, 5)], asks=[(0.50, 5)])
+    seen: list[RiskRejected] = []
+    hs.bus.subscribe(RiskRejected, seen.append)
+    want = [QuoteTarget("M", "entry_bid", BookSide.BID, Price(3500), Qty(500))]
+    await hs.oms.reconcile("edge_taker", "M", want)
+    await hs.oms.reconcile("edge_taker", "M", want)
+    assert len(seen) == 1  # second attempt suppressed (no reject spam every tick)
+    hs.clock.set(hs.clock.now_ms() + hs.oms.reject_backoff_ms)
+    await hs.oms.reconcile("edge_taker", "M", want)
+    assert len(seen) == 2

@@ -42,6 +42,8 @@ class EdgeTaker(Strategy):
                 slack_k=self.cfg.exit_slack_k,
                 premium=self.cfg.exit_premium,
                 rounding=ctx.rounding,
+                max_qty=ctx.max_order_qty,
+                max_usd=ctx.max_order_usd,
             )
             if ex.take is not None:
                 d.takes.append(ex.take)
@@ -113,8 +115,8 @@ class EdgeTaker(Strategy):
         return TakeIntent(ctx.market.ticker, side, limit, Qty(n), "model_edge", expected_edge=worst_edge)
 
     def _maker_entry(self, ctx: StrategyContext, side: BookSide, q: float, sd: float) -> QuoteTarget | None:
-        grid, book = ctx.market.grid, ctx.book
-        bb, ba = book.best_bid, book.best_ask
+        grid = ctx.market.grid
+        bb, ba = ctx.touch(BookSide.BID), ctx.touch(BookSide.ASK)
         if side is BookSide.BID:
             if bb is None:
                 return None

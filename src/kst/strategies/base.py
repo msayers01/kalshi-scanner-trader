@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from kst.core.fixedpoint import Price
 from kst.core.types import BookSide
 from kst.domain.fees import FeeSchedule
 from kst.domain.market import Market
@@ -30,6 +31,23 @@ class StrategyContext:
     max_order_qty: int = 1 << 40  # Qty cap per order (risk.max_order_contracts)
     max_order_usd: float = float("inf")  # $ cost cap per order
     max_position_qty: int = 1 << 40  # Qty cap on |position| in this market
+    own_in_book: bool = False  # live/demo books include our resting orders; paper books don't
+
+    def touch(self, side: BookSide) -> Price | None:
+        """Best price on `side` excluding our own resting quotes, so a quote never chases itself."""
+        best = self.book.best_bid if side is BookSide.BID else self.book.best_ask
+        if not self.own_in_book or best is None:
+            return best
+        own: dict[int, int] = {}
+        for o in self.open_orders:
+            if o.side is side and o.remaining > 0:
+                own[o.price] = own.get(o.price, 0) + o.remaining
+        if not own:
+            return best
+        for px, qty in self.book.depth(side, 25):
+            if qty - own.get(px, 0) > 0:
+                return Price(px)
+        return None
 
     def clip_qty(self, want: int, cost_per_contract: float) -> int:
         """Clip a desired opening size to the risk caps; whole contracts."""

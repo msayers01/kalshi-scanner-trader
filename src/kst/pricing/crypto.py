@@ -6,9 +6,11 @@ Pure math + an in-memory `ReferenceStore` that feeds (adapters) write into.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from scipy import special
+import numpy as np
+from scipy import optimize, special
 
 from kst.core.types import StrikeType
 from kst.domain.market import Market
@@ -16,6 +18,9 @@ from kst.pricing.base import FairValue
 from kst.pricing.volatility import BlendedVol, PriceSeries
 
 # ------------------------------------------------------------------ distribution helpers
+
+_ABOVE = frozenset({StrikeType.GREATER, StrikeType.GREATER_OR_EQUAL})
+_BELOW = frozenset({StrikeType.LESS, StrikeType.LESS_OR_EQUAL})
 
 
 def _or(x: float | None, default: float) -> float:
@@ -103,6 +108,66 @@ def horizon_nu(tau_s: float, nu_min: float = 5.0, excess_kurtosis_1h: float = 3.
     return min(200.0, max(nu_min, 4.0 + 6.0 / kappa))
 
 
+def fit_implied_sigma(
+    points: list[tuple[StrikeType, float | None, float | None, float, float]],
+    spot: float,
+    tau_s: float,
+    *,
+    window_s: float = 60.0,
+    dist: str = "normal",
+    nu: float = 5.0,
+    lo: float = 0.05,
+    hi: float = 5.0,
+) -> float | None:
+    """Annualized σ that best reprices an event's strike ladder (weighted least squares on mids).
+
+    points: (strike_type, floor, cap, mid, weight). Weight ≈ 1/spread² so tight quotes dominate. Fitting one
+    σ per event turns the model into a *relative-value* model: edge comes from strikes that are out of line
+    with the event's own implied distribution, not from a global disagreement about volatility.
+    """
+    if len(points) < 3 or tau_s <= 0:
+        return None
+    # Vectorized: every strike becomes P(A ≤ hi) − P(A ≤ lo) with ±inf bounds for one-sided strikes.
+    lo_k = np.array(
+        [
+            (f if st is StrikeType.BETWEEN else (f if st in _ABOVE else 0.0)) or 0.0
+            for st, f, c, _, _ in points
+        ]
+    )
+    hi_k = np.array(
+        [
+            (c if st is StrikeType.BETWEEN else (c if st in _BELOW else np.inf)) or np.inf
+            for st, f, c, _, _ in points
+        ]
+    )
+    above = np.array([st in _ABOVE for st, *_ in points])
+    mids = np.array([m for *_, m, _ in points])
+    wts = np.array([w for *_, w in points])
+
+    def cdf(sd: SettlementDist, k: np.ndarray) -> np.ndarray:
+        with np.errstate(divide="ignore"):
+            x = np.log(np.maximum(k, 1e-300)) if sd.kind == "log" else k
+        z = (x - sd.loc) / max(sd.scale, 1e-12)
+        if sd.dist == "student_t":
+            out = special.stdtr(sd.nu, z * math.sqrt(sd.nu / (sd.nu - 2.0)))
+        else:
+            out = special.ndtr(z)
+        return np.where(k <= 0, 0.0, np.where(np.isinf(k), 1.0, out))
+
+    def loss(sig: float) -> float:
+        var = sig * sig / 31_536_000.0
+        sd = settlement_distribution(spot, var, tau_s, window_s=window_s, dist=dist, nu=nu)
+        p_hi, p_lo = cdf(sd, hi_k), cdf(sd, lo_k)
+        p = np.where(above, 1.0 - p_lo, p_hi - p_lo)
+        return float(np.sum(wts * (p - mids) ** 2))
+
+    res = optimize.minimize_scalar(loss, bounds=(lo, hi), method="bounded", options={"xatol": 1e-3})
+    if not res.success:
+        return None
+    sig = float(res.x)
+    return None if sig <= lo * 1.01 or sig >= hi * 0.99 else sig  # pinned at a bound ⇒ fit not credible
+
+
 # ------------------------------------------------------------------ reference store (fed by adapters)
 
 
@@ -165,6 +230,9 @@ class CryptoDigitalModel:
         min_samples: int = 30,
         proxy_basis_sd: float = 0.0005,
         excess_kurtosis_1h: float = 3.0,
+        peers: Callable[[Market], list[Market]] | None = None,
+        implied_weight: float = 0.7,
+        max_fit_spread: float = 0.06,
     ) -> None:
         self.store = store
         self.series_index = series_index
@@ -175,6 +243,10 @@ class CryptoDigitalModel:
         self.min_samples = min_samples
         self.proxy_basis_sd = proxy_basis_sd
         self.excess_kurtosis_1h = excess_kurtosis_1h
+        self.peers = peers
+        self.implied_weight = implied_weight
+        self.max_fit_spread = max_fit_spread
+        self._iv_cache: dict[str, tuple[int, float | None]] = {}  # event → (second, σ_implied)
 
     def index_for(self, market: Market) -> str | None:
         return self.series_index.get(market.series_ticker)
@@ -200,6 +272,29 @@ class CryptoDigitalModel:
         )
         return strike_probability(sd, market.strike_type, market.floor_strike, market.cap_strike)
 
+    def implied_sigma(self, market: Market, spot: float, tau_s: float, now_ms: int) -> float | None:
+        """σ implied by the market's own event ladder (cached per event per second)."""
+        if self.peers is None or self.implied_weight <= 0 or tau_s <= self.window_s:
+            return None
+        key = market.event_ticker
+        hit = self._iv_cache.get(key)
+        if hit is not None and hit[0] == now_ms // 1000:
+            return hit[1]
+        pts: list[tuple[StrikeType, float | None, float | None, float, float]] = []
+        for m in self.peers(market):
+            if m.strike_type not in self._STRIKES or m.yes_bid is None or m.yes_ask is None:
+                continue
+            bid, ask = m.yes_bid / 10_000, m.yes_ask / 10_000
+            spread = ask - bid
+            mid = 0.5 * (bid + ask)
+            if spread <= 0 or spread > self.max_fit_spread or not 0.03 <= mid <= 0.97:
+                continue
+            pts.append((m.strike_type, m.floor_strike, m.cap_strike, mid, 1.0 / max(spread, 0.01) ** 2))
+        nu = horizon_nu(tau_s, self.nu, self.excess_kurtosis_1h)
+        sig = fit_implied_sigma(pts, spot, tau_s, window_s=self.window_s, dist=self.distribution, nu=nu)
+        self._iv_cache[key] = (now_ms // 1000, sig)
+        return sig
+
     def fair_value(self, market: Market, now_ms: int) -> FairValue | None:
         idx = self.index_for(market)
         if idx is None or market.close_time_ms is None:
@@ -218,18 +313,26 @@ class CryptoDigitalModel:
         if tau_s <= self.window_s:
             got = st.series.average(close - int(self.window_s * 1000), now_ms + 1)
             obs_avg = got[0] if got else None
-        p = self._prob(market, spot, est.var_per_s, tau_s, obs_avg)
+        # Variance: blend the event-implied σ (relative value) with realized σ (anchor).
+        var = est.var_per_s
+        iv = self.implied_sigma(market, spot, tau_s, now_ms)
+        if iv is not None:
+            w = self.implied_weight
+            var = w * (iv * iv / 31_536_000.0) + (1 - w) * est.var_per_s
+        p = self._prob(market, spot, var, tau_s, obs_avg)
         if p is None:
             return None
-        # Parameter uncertainty: σ ± se(σ), plus basis risk when pricing off a proxy feed.
+        # Parameter uncertainty: σ ± se(σ) (plus implied/realized disagreement), and basis risk on proxies.
         k = est.rel_se_sigma
-        p_hi = _or(self._prob(market, spot, est.var_per_s * (1 + k) ** 2, tau_s, obs_avg), p)
-        p_lo = _or(self._prob(market, spot, est.var_per_s * max(1 - k, 0.05) ** 2, tau_s, obs_avg), p)
+        if iv is not None:
+            k = math.hypot(k, (1 - self.implied_weight) * abs(math.log(iv / max(est.sigma_annual, 1e-6))))
+        p_hi = _or(self._prob(market, spot, var * (1 + k) ** 2, tau_s, obs_avg), p)
+        p_lo = _or(self._prob(market, spot, var * max(1 - k, 0.05) ** 2, tau_s, obs_avg), p)
         sd = abs(p_hi - p_lo) / 2.0
         if st.source != "kalshi_cf" and self.proxy_basis_sd > 0:
             b = self.proxy_basis_sd
-            pu = _or(self._prob(market, spot * (1 + b), est.var_per_s, tau_s, obs_avg), p)
-            pd = _or(self._prob(market, spot * (1 - b), est.var_per_s, tau_s, obs_avg), p)
+            pu = _or(self._prob(market, spot * (1 + b), var, tau_s, obs_avg), p)
+            pd = _or(self._prob(market, spot * (1 - b), var, tau_s, obs_avg), p)
             sd = math.hypot(sd, abs(pu - pd) / 2.0)
         return FairValue(
             p=p,
@@ -239,7 +342,8 @@ class CryptoDigitalModel:
             detail={
                 "index": idx,
                 "spot": round(spot, 2),
-                "sigma_ann": round(est.sigma_annual, 4),
+                "sigma_rv": round(est.sigma_annual, 4),
+                "sigma_iv": None if iv is None else round(iv, 4),
                 "tau_s": round(tau_s, 1),
                 "src": st.source,
             },

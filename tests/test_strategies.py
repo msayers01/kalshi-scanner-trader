@@ -256,3 +256,29 @@ def test_gate_scope_unmodeled_only() -> None:
     )
     assert gate.decide(_cand(), modeled=True)[0] is True
     assert gate.decide(_cand(), modeled=False)[0] is False
+
+
+def test_exit_is_sliced_to_order_caps() -> None:
+    book = _book([(6500, 20_000)], [(6700, 20_000)])
+    # 89 contracts long, liquidation beats hold → take, but at most 50 per order
+    ex = plan_exit("M", 8900, 0.60, 0.02, book, FEES, _market().grid, max_qty=5000)
+    assert ex.take is not None and ex.take.qty == 5000
+    # Passive exit (sell YES @ 0.77 ⇒ $0.23 risk per contract) capped by $ per order: $2.30 → 10 contracts
+    ex2 = plan_exit("M", 8900, 0.75, 0.02, book, FEES, _market().grid, max_usd=2.3)
+    assert ex2.quote is not None and ex2.quote.qty == 1000
+
+
+def test_maker_entry_does_not_chase_own_quote() -> None:
+    """Live books contain our own resting bid; the maker entry must not penny-jump itself."""
+    from kst.domain.orders import Order
+
+    book = _book([(4000, 1000), (3900, 5000)], [(4800, 5000)])
+    own = Order("kst-et-x", "M", BookSide.BID, Price(4000), Qty(1000), slot="entry_bid")
+    ctx = _ctx(0.47, 0.005, book)
+    ctx.open_orders = [own]
+    assert ctx.touch(BookSide.BID) == 4000  # paper: books never include our orders
+    ctx.own_in_book = True
+    assert ctx.touch(BookSide.BID) == 3900  # live: our 10 lots at 40¢ are the whole level
+    d = EdgeTaker(EdgeTakerCfg(entry_style="maker")).evaluate(ctx)
+    bids = [q for q in d.quotes if q.side is BookSide.BID]
+    assert bids and bids[0].price == 4000  # stays one tick above the *other* best bid, not 41¢

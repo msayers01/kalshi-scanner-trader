@@ -152,6 +152,23 @@ subscribed to too much.
 - `GET /account/limits` returns your actual budgets. `kst` reads it at
   startup in live and demo mode.
 
+**Unauthenticated public access** (observed 2026-10-18, no API key):
+
+- Light requests (a single orderbook, a small `/markets` page) are fine at
+  about 20/s.
+- Heavy pages are throttled much harder: `GET /markets?limit=500–1000` and
+  `GET /events?with_nested_markets=true`. Paging all open events with nested
+  markets returned 429s within a few pages. The nested-events response is
+  enormous because every market carries its full rules text.
+- Open-market counts by close-time horizon: about 5k markets close within
+  24 h, and about 33k within 72 h (about 70 MB per full refresh). Without keys
+  the catalog therefore pages `/markets?status=open&mve_filter=exclude` with
+  `min_close_ts`/`max_close_ts` (`universe.max_hours_to_close`, default 24),
+  sleeps `universe.page_delay_s` between pages, and fetches event metadata
+  only for events it has not seen (`GET /events/{ticker}`, chunked).
+- `KalshiRest.request` retries GETs on 429 up to 5 times with
+  `min(0.5·2ⁿ, 16)` s backoff, and counts them (`throttled`).
+
 ## Fees
 
 - Per series: `fee_type` is one of `quadratic`, `quadratic_with_maker_fees`,
@@ -174,9 +191,10 @@ subscribed to too much.
   `yes_ask_dollars` (+ `_size_fp`), `volume_24h_fp`, `open_interest_fp`,
   `price_ranges`, `exchange_index`, `result`, and
   `fee_waiver_expiration_time`.
-- **Market objects have no `series_ticker`.** Get it from the event:
-  `GET /events?status=open&with_nested_markets=true`, max 200 per page. It is
-  also the prefix of `event_ticker` before the first `-`.
+- **Market objects have no `series_ticker`.** It is the prefix of
+  `event_ticker` before the first `-` (`series_from_event_ticker`), or comes
+  from the event object. `GET /events?with_nested_markets=true` (max 200 per
+  page) also has it, but see the throttling note above.
 - `GET /events` excludes multivariate (combo) events. Use
   `mve_filter=exclude` on `/markets` to avoid tens of thousands of combo
   markets.

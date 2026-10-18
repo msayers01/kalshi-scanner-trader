@@ -130,6 +130,7 @@ class ScannerService:
         clock: Clock,
         *,
         rounding: float = 0.0001,
+        max_disagreement: float = 0.15,
     ) -> None:
         self.cfg = cfg
         self.pricing = pricing
@@ -140,6 +141,7 @@ class ScannerService:
         self.bus = bus
         self.clock = clock
         self.rounding = rounding
+        self.max_disagreement = max_disagreement
         self.latest: ScanSnapshot | None = None
         self.extra_focus: set[str] = set()
 
@@ -272,6 +274,9 @@ class ScannerService:
         score = c.w_liquidity * math.log10(1.0 + max(r.volume_24h, 0.0))
         mid = r.mid
         live = mid is not None and 0.02 <= mid <= 0.98  # two-sided and not effectively decided
+        if live and mid is not None and r.fair is not None and abs(r.fair - mid) > self.max_disagreement:
+            r.signals.append("DISAGREE")  # strategies won't trust the model here; neither should the ranking
+            live = False
         be = r.best_edge if live else None
         if be is not None and be >= c.min_edge_signal:
             r.signals.append("EDGE+" if (r.edge_buy or -1) >= (r.edge_sell or -1) else "EDGE-")

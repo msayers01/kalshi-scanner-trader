@@ -16,15 +16,24 @@ Risk lives in `src/kst/risk/`.
 |---|---|---|---|---|
 | `RUNNING` | ✅ | ✅ | kept | pause / kill |
 | `PAUSED` | ❌ | ✅ | entry quotes cancelled, exit quotes kept | resume |
-| `KILLED` | ❌ | only explicit **flatten** | **all cancelled** (`DELETE /portfolio/events/orders`) | resume (operator, explicit) |
+| `KILLED` | ❌ | only explicit **flatten** orders that are also risk-reducing | **all cancelled** (`DELETE /portfolio/events/orders`) | resume (operator, explicit) |
 
 `KILLED` is persisted and survives restarts. On startup in `KILLED` the
 engine stays killed and alerts.
 
 ## Pre-trade checks (the chain, evaluated in order)
 
+Two chains run in order: `ALWAYS` (every order) and `ENTRY_ONLY` (marked ★).
 An order is "risk-reducing" if it shrinks `|position|` in its market without
-flipping the sign. Risk-reducing orders skip the checks marked ★.
+flipping the sign. Risk-reducing orders skip the ★ checks.
+
+**Arb basket legs** (`basket_id` set) also skip `PriceBand`,
+`DailyNewMarketLimit`, and `MaxOpenPositions`, because a hedged basket is one
+trade, not N directional entries. The exposure checks still apply to every leg,
+and `AutoTrader.run_arbs` pre-checks every leg before sending any.
+
+**Re-quotes** pass `replaces=<client_order_id>`, so the order being amended
+or replaced is not counted against position and exposure room twice.
 
 | # | Check | Default | Notes |
 |---|---|---|---|
@@ -33,25 +42,27 @@ flipping the sign. Risk-reducing orders skip the checks marked ★.
 | 3 | `MarketTradable` | — | Status `active`, inside the open/close window, no exchange pause. |
 | 4 | `DataFresh` | WS 5 s / poll 20 s | The book is younger than its staleness limit. |
 | 5 | `PriceOnGrid` | — | The price is valid on the market's `price_ranges` and is not 0 or 1. |
-| 6 | `FatFinger` | 0.10 | `|price − reference| ≤ max_price_deviation`, where reference is the fair value, else the mid. |
+| 6 | `FatFinger` | 0.10 | `|price − reference| ≤ max_price_deviation` when the price is *worse* for us than the reference. The reference is the fair value if the caller has one, else the live book mid (fresh books only), else the catalog mid. Manual orders are checked against the book mid. |
 | 7 | ★ `PriceBand` | 0.03–0.97 | Entry prices outside the band are refused (lottery tickets and pennies-in-front-of-steamroller trades). |
 | 8 | ★ `MinTimeToClose` | 120 s | No new entries this close to close. |
-| 9 | `MaxOrderSize` | 50 contracts / $50 | Applies to each order. |
+| 9 | `MaxOrderSize` | 50 contracts / $50 | Applies to each order. Strategies clip entries (`StrategyContext.clip_qty`) and exits (`plan_exit(max_qty=, max_usd=)`) to these caps, so a large position exits in slices instead of being rejected. |
 | 10 | ★ `MaxPositionPerMarket` | 100 contracts / $50 | Includes resting orders on the same side (worst case). |
 | 11 | ★ `MaxExposurePerEvent` | $100 | Correlated outcomes. |
 | 12 | ★ `MaxExposurePerCategory` | $250 | Optional per-category overrides. |
 | 13 | ★ `MaxTotalExposure` | $500 and 50% of equity | Exposure = worst-case loss = cost basis of positions + resting buy orders. |
 | 14 | ★ `MaxOpenPositions` | 15 | |
 | 15 | ★ `DailyNewMarketLimit` | 10 / trading day | **"Daily limit of markets"**: distinct markets entered per trading day (timezone `app.trading_day_tz`, default America/New_York). A slot is reserved when an entry order is sent and released if the order dies unfilled. |
-| 16 | `OrderRate` | 60 / min | Protects the rate-limit budget and catches loops. |
+| 16 | `OrderRate` | 60 / min | Protects the rate-limit budget and catches loops. Risk-reducing orders get 2× the cap, so exits still work when entries hit the limit. |
 | 17 | ★ `CategoryAllowed` | config | `universe.categories` allow-list and `risk.blocked_series`. |
 | 18 | ★ `BlackoutWindow` | config | No entries during configured windows, e.g. CPI/FOMC ± 5 min for crypto. |
 | 19 | `SelfCross` | — | Never send an order that would cross our own resting order. Exchange STP is a backstop. |
 | 20 | `SufficientBalance` | — | Cost ≤ available cash − `risk.cash_buffer`. |
 
-Every rejection is logged with the check name. It is counted in
-`/api/health`, and if rejections storm (more than N in M seconds), the system
-alerts on Discord.
+Every rejection is logged (`risk_rejected`) with the check name and counted in
+`/api/status`. A quote slot whose placement is rejected is not re-placed for
+`OrderManager.reject_backoff_ms` (5 s), so a limit that is hit does not turn
+into a reject every tick. The take cooldown (2 s per market) throttles repeat
+entry takes but never cancels resting quotes.
 
 ## Breakers (evaluated on every portfolio update)
 

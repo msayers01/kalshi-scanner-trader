@@ -46,6 +46,7 @@ class OrderManager:
         qty_tolerance: float = 0.2,
         order_ttl_s: int = 600,
         tick_of: Callable[[str], int] | None = None,
+        reject_backoff_ms: int = 5000,
     ) -> None:
         self.broker = broker
         self.risk = risk
@@ -58,6 +59,9 @@ class OrderManager:
         self.orders: dict[str, Order] = {}
         self._ex_to_coid: dict[str, str] = {}
         self._cancelling: set[str] = set()
+        # (strategy, ticker, slot) → ms until which a risk-rejected quote slot is not re-placed (no reject spam)
+        self.reject_backoff_ms = reject_backoff_ms
+        self._slot_backoff: dict[tuple[str, str, str], int] = {}
         self.unknown_fills = 0
         broker.bind(self)
 
@@ -78,7 +82,7 @@ class OrderManager:
     # ------------------------------------------------------------------ placement
 
     async def submit(
-        self, order: Order, *, reference_price: float | None = None, manual: bool = False
+        self, order: Order, *, reference_price: float | None = None, manual: bool = False, replaces: str = ""
     ) -> CheckResult:
         prop = OrderProposal(
             ticker=order.ticker,
@@ -92,6 +96,7 @@ class OrderManager:
             basket_id=order.basket_id,
             manual=manual,
             flatten=order.strategy == "flatten",
+            replaces=replaces,
         )
         res = self.risk.check(prop)
         now = self.clock.now_ms()
@@ -100,6 +105,8 @@ class OrderManager:
         if not res.ok:
             order.status = OrderStatus.REJECTED
             order.reject_reason = f"risk:{res.check}: {res.detail}"
+            if order.slot:
+                self._slot_backoff[(order.strategy, order.ticker, order.slot)] = now + self.reject_backoff_ms
             self.bus.publish(OrderUpdated(now, order))
             return res
         order.is_entry = not self.risk.is_risk_reducing(order.ticker, order.side, order.qty)
@@ -162,7 +169,8 @@ class OrderManager:
         for slot, t in wanted.items():
             cur = live.get(slot)
             if cur is None:
-                tasks.append(self._place_quote(strategy, t, reference_price))
+                if now >= self._slot_backoff.get((strategy, ticker, slot), 0):
+                    tasks.append(self._place_quote(strategy, t, reference_price))
                 continue
             o = cur
             if o.status is not OrderStatus.RESTING or o.client_order_id in self._cancelling:
@@ -182,7 +190,9 @@ class OrderManager:
         if tasks:
             await asyncio.gather(*tasks)
 
-    async def _place_quote(self, strategy: str, t: QuoteTarget, reference_price: float | None) -> None:
+    async def _place_quote(
+        self, strategy: str, t: QuoteTarget, reference_price: float | None, replaces: str = ""
+    ) -> None:
         o = Order(
             client_order_id=new_client_order_id(strategy),
             ticker=t.ticker,
@@ -194,7 +204,7 @@ class OrderManager:
             strategy=strategy,
             slot=t.slot,
         )
-        await self.submit(o, reference_price=reference_price)
+        await self.submit(o, reference_price=reference_price, replaces=replaces)
 
     async def _requote(self, strategy: str, o: Order, t: QuoteTarget, reference_price: float | None) -> None:
         if o.side is t.side:
@@ -207,10 +217,14 @@ class OrderManager:
                 strategy=strategy,
                 post_only=True,
                 reference_price=reference_price,
+                replaces=o.client_order_id,
             )
             res = self.risk.check(prop)
             if not res.ok:
                 await self.cancel(o)
+                self._slot_backoff[(strategy, t.ticker, t.slot)] = (
+                    self.clock.now_ms() + self.reject_backoff_ms
+                )
                 return
             exp = self.clock.now_ms() // 1000 + self.order_ttl_s
             if await self.broker.amend(o, Price(t.price), new_total, expiration_ts=exp):
@@ -218,7 +232,7 @@ class OrderManager:
                 self.bus.publish(OrderUpdated(o.updated_ms, o))
                 return
         await self.cancel(o)
-        await self._place_quote(strategy, t, reference_price)
+        await self._place_quote(strategy, t, reference_price, replaces=o.client_order_id)
 
     # ------------------------------------------------------------------ cancels
 

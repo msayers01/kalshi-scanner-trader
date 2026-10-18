@@ -17,7 +17,7 @@ from kst.core.clock import Clock
 from kst.core.events import BookUpdated, TradePrinted
 from kst.core.fixedpoint import MICROS_PER_DOLLAR, PRICE_SCALE
 from kst.core.logging import get_logger
-from kst.core.types import EngineState
+from kst.core.types import EngineState, Mode
 from kst.domain.orders import Decision
 from kst.engine.control import ControlService
 from kst.engine.state import EngineStateStore
@@ -221,11 +221,7 @@ class AutoTrader:
         post = self.posterior(ticker)
         pos = self.portfolio.positions.get(ticker)
         summary = self.portfolio.summary()
-        allow = (
-            state is EngineState.RUNNING
-            and self.risk.can_enter(ticker)
-            and now - self._last_take.get(ticker, 0) >= self.take_cooldown_ms
-        )
+        allow = state is EngineState.RUNNING and self.risk.can_enter(ticker)
         ctx = StrategyContext(
             now_ms=now,
             market=m,
@@ -241,8 +237,13 @@ class AutoTrader:
             max_order_qty=int(self.risk.limits.max_order_contracts * 100),
             max_order_usd=self.risk.limits.max_order_usd,
             max_position_qty=int(self.risk.limits.max_position_contracts * 100),
+            own_in_book=self.s.app.mode in (Mode.LIVE, Mode.DEMO),
         )
         d = strat.evaluate(ctx)
+        if now - self._last_take.get(ticker, 0) < self.take_cooldown_ms:
+            # Throttle repeat entry takes on the same (possibly not-yet-refreshed) book. Resting quotes are
+            # left alone: toggling entries off here would cancel and re-place them every cycle.
+            d.takes = [t for t in d.takes if t.reduce_only]
         gated = ""
         has_entry = any(not t.reduce_only for t in d.takes) or any(not q.reduce_only_intent for q in d.quotes)
         if has_entry and strat.name not in self.s.llm.bypass_strategies:

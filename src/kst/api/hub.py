@@ -138,7 +138,7 @@ class WsHub:
                 elif op == "unsub_book":
                     c.book = None
                 elif op == "ping":
-                    c.offer(orjson.dumps({"type": "pong", "ts": msg.get("ts")}))
+                    c.offer(orjson.dumps({"type": "pong", "data": {"ts": msg.get("ts")}}))
         except (WebSocketDisconnect, RuntimeError):
             pass
         except Exception:

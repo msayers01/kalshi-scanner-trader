@@ -197,6 +197,8 @@ class CryptoPricingCfg(BaseModel):
     min_vol_annual: float = 0.15  # clamps protect against dead/garbage feeds
     max_vol_annual: float = 4.0
     max_ref_age_s: float = 10.0  # model unavailable if reference price older than this
+    implied_weight: float = 0.7  # weight on the event-ladder implied σ vs realized σ (relative-value pricing)
+    max_fit_spread: float = 0.06  # only quotes tighter than this enter the implied-σ fit
     min_samples: int = 30
 
 

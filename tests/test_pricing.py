@@ -235,3 +235,20 @@ def test_calibrated_prior_requires_fit() -> None:
     model = CalibratedPriorModel(cs)
     fv = model.fair_value(m, 0)
     assert model.applies(m) and fv is not None and fv.market_based and fv.p < 0.06
+
+
+def test_implied_sigma_recovers_ladder_vol() -> None:
+    from kst.pricing.crypto import fit_implied_sigma
+
+    spot, tau, sig = 100.0, 6 * 3600.0, 0.60
+    sd = settlement_distribution(spot, sig**2 / SECONDS_PER_YEAR, tau)
+    pts = []
+    for k in (97.0, 98.5, 100.0, 101.5, 103.0):
+        pts.append((StrikeType.GREATER, k, None, strike_probability(sd, StrikeType.GREATER, k, None), 1.0))
+    pts.append(
+        (StrikeType.BETWEEN, 99.0, 100.0, strike_probability(sd, StrikeType.BETWEEN, 99.0, 100.0), 1.0)
+    )
+    pts.append((StrikeType.LESS, None, 98.0, strike_probability(sd, StrikeType.LESS, None, 98.0), 1.0))
+    got = fit_implied_sigma(pts, spot, tau)
+    assert got == pytest.approx(sig, rel=0.01)
+    assert fit_implied_sigma(pts[:2], spot, tau) is None  # too few points

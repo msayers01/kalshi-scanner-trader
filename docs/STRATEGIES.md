@@ -116,7 +116,9 @@ p_x = snap_up(q̂ + max(exit_premium, f_m(q̂) + tick))
 ```
 
 It captures the spread if the market comes to us. NO positions are symmetric
-(use the ask). There is **no naive stop-loss**. If the price falls but our
+(use the ask). Both the exit take and the exit quote are capped at the
+per-order limits (`risk.limits.max_order_contracts` / `max_order_usd`), so a
+position larger than one order exits in slices over successive ticks. There is **no naive stop-loss**. If the price falls but our
 `q̂` still exceeds the liquidation value, holding has higher EV. Risk limits
 (§RISK) bound the damage when the model is wrong, and the daily-loss breaker
 pauses the system.
@@ -153,6 +155,12 @@ no gaps. For other events, the event must be on `structural_arb.exhaustive_allow
 
 ### 2.2 Strike ladders (same event, same underlying, same expiry)
 
+Only true ladders qualify: every market's ticker must end in `-T<strike>`
+(`_LADDER_TICKER` in `scanner/signals.py`), and strikes must be distinct.
+That excludes events that bundle unrelated
+markets (several cities or players) under one event ticker. Those produced
+false "arbs" in live data.
+
 For `greater` strikes `K1 < K2`, monotonicity requires `P(>K1) ≥ P(>K2)`. The
 pair "buy YES K1 at `a₁`, sell YES K2 at `b₂`" pays at least $1 in every state:
 
@@ -172,11 +180,21 @@ trade iff  b₂ − a₁ > f(a₁) + f(b₂) + margin
 
 ### 2.3 Execution
 
-The size is the minimum available quantity across legs at the quoted prices,
-capped by limits. All legs are sent at once as IOC limit orders at the
-observed prices, tagged with a shared `basket_id`. After the fills, the
-strategy re-evaluates residual legs: it completes them if they are still
-profitable at current prices, otherwise it leaves them to the EV exit rule.
+`StructuralArb.plan` sizes the basket as the minimum available quantity
+across legs at the quoted prices. It is capped by `structural_arb.max_basket_usd`,
+`risk.limits.max_order_contracts`, and `max_order_usd` per leg, in whole
+baskets.
+
+`AutoTrader.run_arbs` then runs the full risk check on **every** leg first and
+sends nothing unless all legs pass, to avoid legging into naked risk. Passing
+legs go out at once as IOC limit orders at the observed prices, tagged with a
+shared `basket_id`. A per-opportunity cooldown (5 × the take cooldown) applies
+whether or not the basket was sent.
+
+**Known gap (roadmap):** residual legs of a partially filled basket are not
+completed automatically. They are held like any position, and markets without
+a model have no exit strategy, so they are held to settlement. Watch the
+positions tab after arb fills.
 
 ---
 
@@ -211,10 +229,20 @@ s_A = (τ / w) · S_t · σ_s · √(τ/3)
 P(A>K) = 1 − F((K − μ_A) / s_A)
 ```
 
-**Fat tails.** `F` is either the standard normal CDF, or a unit-variance
-Student-t: `F(z) = T_ν(z · √(ν/(ν−2)))`, with ν = 5 by default. Short-horizon
-crypto returns are leptokurtic, and the t-distribution prices the tails, which
-are exactly where cheap contracts trade.
+**Fat tails, horizon-dependent** (`horizon_nu`). `F` is a unit-variance
+Student-t, `F(z) = T_ν(z · √(ν/(ν−2)))`, or the normal CDF. The tail
+weight must shrink with horizon. For i.i.d. increments, the excess kurtosis of
+an n-period sum scales as κ₁/n, so:
+
+```
+κ(τ) = κ_1h · 3600 / τ                 (crypto_pricing.excess_kurtosis_1h, default 3.0)
+ν(τ) = clamp(4 + 6/κ(τ), ν_min, 200)   (a unit-variance t_ν has excess kurtosis 6/(ν−4); ν_min = crypto_pricing.nu)
+```
+
+Fifteen-minute contracts keep fat tails, while multi-hour contracts converge to
+near-normal, as the CLT requires. A fixed ν = 5 at every horizon overpriced
+far-out-of-the-money strikes, and in live paper runs the model kept buying
+longshots.
 
 **Strike types.** `greater`/`greater_or_equal`: `P(A > floor)`. `less`/`less_or_equal`:
 `P(A < cap)`. `between`: `P(floor ≤ A ≤ cap) = F(cap) − F(floor)`.
@@ -226,13 +254,36 @@ blended: `σ² = ω σ_fast² + (1 − ω) σ_slow²`. The slow estimator is see
 startup from 1-minute Coinbase candles (last 6 h), so the model is usable
 immediately.
 
+**Event-implied volatility (relative value).** Every crypto event is a
+ladder of strikes on the same index and expiry. `fit_implied_sigma` finds the
+single annualized σ that best reprices the event's own two-sided mids by
+weighted least squares. It weights each strike by `1/spread²`, uses only
+strikes with spread ≤ `max_fit_spread` (6¢) and mid in [0.03, 0.97], needs at
+least 3 points, and does a bounded scalar search over σ ∈ [0.05, 5]. The
+pricing variance blends implied and realized:
+
+```
+σ²_used = w · σ²_iv + (1 − w) · σ²_rv        w = crypto_pricing.implied_weight (default 0.7)
+```
+
+Edge now comes mostly from strikes that are out of line with the event's
+*own* implied distribution, not from a global disagreement with the market about
+volatility, which is the part of the model most likely to be wrong. The fit is
+cached per event per second. Inside the averaging window, or with fewer than 3
+usable strikes, σ is purely realized. The scanner shows `sigma_rv` and
+`sigma_iv` in each row's detail.
+
 **Model uncertainty.** The relative standard error of the variance is
-`≈ √(2 / N_eff)`, with `N_eff = (1+λ)/(1−λ)` for the EWMA. It is propagated
-numerically: `σ_model = |P(σ⁺) − P(σ⁻)| / 2`. This feeds `combine_with_market`.
+`≈ √(2 / N_eff)`, using Kish's effective sample size of the EWMA weights. When
+an implied σ is used, the implied/realized disagreement is added in quadrature:
+`k = √(k_rv² + ((1 − w) · |ln(σ_iv / σ_rv)|)²)`. It is propagated
+numerically: `σ_model = |P(σ(1+k)) − P(σ(1−k))| / 2`, plus a basis term when
+pricing off the Coinbase proxy. This feeds `combine_with_market`.
 
 **Known risks.** Scheduled macro releases (CPI, FOMC) cause volatility jumps
 the EWMA does not anticipate. `risk.blackout_windows` can pause new crypto
-entries around them. Implied vol from options (Deribit DVOL) is on the roadmap.
+entries around them. Options-implied vol (Deribit DVOL) as a third anchor is on
+the roadmap.
 
 ---
 
@@ -257,7 +308,7 @@ member becomes a Gaussian kernel. The bandwidth inflates the ensemble spread
 to correct the known under-dispersion:
 
 ```
-h = max(h_min, α · std(x) · J^(−1/5))         (Silverman-style, α = inflation, default 1.3; h_min = 1.0 °F)
+h = max(h_min, α · std(x) · J^(−1/5), α · std(x) / 2)   (Silverman-style, α = inflation 1.3, h_min = 1.0 °F)
 P(X ≤ k) = (1/J) Σ_j Φ((k + 0.5 − x_j) / h)
 ```
 
@@ -273,6 +324,13 @@ This is the correct update when `X` describes only the remaining hours. As the
 day ends, `X` collapses toward the current temperature and the distribution
 concentrates on `M`.
 
+**No observations, no model.** Once the climate day is more than
+`obs_required_after_s` (2 h) old, the model returns nothing unless it has the
+day's observed maximum. A forecast of only the *remaining* hours, without `M`,
+ignores the heat already recorded and gives confidently wrong 0/1
+probabilities. NWS observations are fetched with `limit=500`, because the
+default page of 20 misses the morning.
+
 **Uncertainty.** `σ_model = √(q(1−q) / J)` (ensemble sampling) ⊕ a
 model-error floor.
 
@@ -287,13 +345,23 @@ should be fitted per station from history (roadmap: `kst calibrate-weather`).
 **Markets:** anything the model resolver covers (crypto, weather).
 
 1. `q̂, σ_q` come from the model, combined with the market (§1.1).
-2. If `EV_buy` or `EV_sell` at the touch exceeds `θ`, take liquidity with an
-   IOC limit at the touch, walking the book only while the marginal EV stays
-   above `θ`, up to the Kelly size (§1.2).
-3. Otherwise, if `entry_style ∈ {maker, auto}` and a post-only quote one tick
-   inside the spread would have `EV > θ_maker` (with the maker fee), rest that
-   quote. It is cancelled when the edge disappears.
-4. Positions are managed by the exit rule (§1.3).
+2. **Disagreement guard.** If `|p_model − mid| > max_disagreement` (default
+   0.15), skip entries. A model that far from a liquid market is likelier to
+   be wrong (stale feed, wrong strike semantics, a missed observation) than to
+   be free money. Exits still run.
+3. If `EV_buy` or `EV_sell` at the touch exceeds `θ = max(min_edge, z·σ_q)`,
+   take liquidity with an IOC limit at the touch. It walks the book only while
+   the marginal EV stays above `θ`, up to the Kelly size (§1.2), clipped to the
+   per-order and per-market caps. Repeat entry takes on the same market are
+   throttled by a 2 s cooldown.
+4. Otherwise, if `entry_style ∈ {maker, auto}` and a post-only quote one tick
+   inside the spread would have `EV > max(maker_min_edge, z·σ_q)` (with the
+   maker fee), rest that quote. It is cancelled when the edge disappears. The
+   "touch" excludes our own resting quote (`StrategyContext.touch`). Live
+   books contain our orders, and without this the quote would penny-jump
+   itself every tick.
+5. Entries only ever add in the direction of the current position. Positions
+   are managed by the exit rule (§1.3).
 
 ---
 
@@ -314,7 +382,10 @@ bid = snap_down(σ(r − Δ/2)),   ask = snap_up(σ(r + Δ/2))
 
 - Post-only: `bid < best_ask` and `ask > best_bid`.
 - Maker EV floor: `q̂ − bid − f_m(bid) ≥ mm_min_edge` and
-  `ask − q̂ − f_m(ask) ≥ mm_min_edge`.
+  `ask − q̂ − f_m(ask) ≥ mm_min_edge`. Quotes are **clamped** to
+  `q̂ ∓ (min_edge + f_m)` rather than dropped. Under heavy inventory skew, the
+  risk-reducing side moves right up to that floor and keeps working. Without the
+  clamp it disappeared exactly when it was needed.
 - Inventory caps: no bid when `I ≥ I_max`, no ask when `I ≤ −I_max`.
 - Size tapers linearly with `|I|`.
 
@@ -325,6 +396,8 @@ bid = snap_down(σ(r − Δ/2)),   ask = snap_up(σ(r + Δ/2))
 - The reference feed is stale.
 - Time-to-close is below `mm.min_time_to_close_s`. Adverse selection peaks
   near resolution.
+
+Default `γ = 1.0` (`strategies.market_maker.gamma`).
 
 **Fair value `x̂`.** The model `q̂` when available, otherwise the microprice
 `(b·Q_a + a·Q_b)/(Q_a + Q_b)`, optionally passed through the calibrated prior
@@ -368,15 +441,20 @@ side of Kalshi's flow.
 
 ## 8. Routing (`strategies/router.py`)
 
-The router applies rules in priority order. The first match wins, per market:
+`structural_arb` is not routed per market. It runs at the event level on
+the scanner's arb opportunities, alongside everything else.
 
-1. Markets in an event with a live arb signal → `structural_arb`. It works at
-   the event level and runs alongside the other strategies.
-2. Markets with a fair-value model (`pricing/resolver.py`) → `edge_taker`,
-   plus `market_maker` if that is enabled for the series.
-3. Other markets, only if the LLM gate approves → `market_maker` in calibrated
-   maker-only mode, when the calibration is fitted. Otherwise they are
-   **not traded**.
+For per-market strategies, `Router.route` picks one, and the first match wins:
+
+1. Series listed in `strategies.market_maker.series` → `market_maker`, which
+   quotes around `q̂`, or the microprice if no model covers the market.
+2. Markets with a fair-value model (`pricing/resolver.py`) → `edge_taker`.
+3. Other markets → `market_maker` in calibrated maker-only mode, if
+   `use_calibrated_prior` is on and a fitted prior applies. Otherwise they
+   are **not traded**.
+
+In every case, a *new entry* still needs the LLM gate's ENTER verdict when the
+gate is on and the market is in `llm.scope` (`docs/LLM_GATE.md`).
 
 The router never trades a market its strategy cannot price. "No model, no
 trade" is the default.

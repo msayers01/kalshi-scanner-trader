@@ -34,10 +34,22 @@ def plan_exit(
     premium: float = 0.02,
     rounding: float = 0.0001,
     slot: str = "exit",
+    max_qty: int | None = None,
+    max_usd: float | None = None,
 ) -> ExitPlan:
+    """`max_qty`/`max_usd` are the per-order caps (risk.max_order_*): large positions exit in slices."""
     if pos_qty == 0:
         return ExitPlan(None, None, None, 0.0)
-    n = Qty(abs(pos_qty))
+    n = abs(pos_qty)
+
+    def cap(side: BookSide, px: int, want: int) -> Qty:
+        if max_qty is not None:
+            want = min(want, max_qty)
+        if max_usd is not None and max_usd != float("inf"):
+            per = max(px if side is BookSide.BID else PRICE_SCALE - px, 1)  # Price × Qty = micros, exactly
+            want = min(want, (round(max_usd * 1_000_000) // per) // 100 * 100)
+        return Qty(max(want, 0))
+
     if pos_qty > 0:  # long YES → exit by selling YES at the bid
         hold = q
         bid = book.best_bid
@@ -51,7 +63,7 @@ def plan_exit(
                 ticker,
                 BookSide.ASK,
                 bid,
-                Qty(min(n, book.qty_at_or_better(BookSide.BID, bid))),  # bids we sell into
+                cap(BookSide.ASK, bid, min(n, book.qty_at_or_better(BookSide.BID, bid))),  # bids we sell into
                 "ev_exit",
                 reduce_only=True,
                 expected_edge=liq - hold,
@@ -61,7 +73,7 @@ def plan_exit(
         px = grid.snap_up(prob_to_price_ceil(min(target, 0.9999)))
         if px is not None and bid is not None and px <= bid:
             px = grid.tick_above(bid)
-        if px is None:
+        if px is None or (qn := cap(BookSide.ASK, px, n)) <= 0:
             return ExitPlan(None, None, liq, hold)
         return ExitPlan(
             None,
@@ -70,7 +82,7 @@ def plan_exit(
                 slot,
                 BookSide.ASK,
                 Price(px),
-                n,
+                qn,
                 reduce_only_intent=True,
                 expected_edge=px / PRICE_SCALE - q,
             ),
@@ -91,7 +103,7 @@ def plan_exit(
             ticker,
             BookSide.BID,
             ask,
-            Qty(min(n, book.qty_at_or_better(BookSide.ASK, ask))),  # asks we buy from
+            cap(BookSide.BID, ask, min(n, book.qty_at_or_better(BookSide.ASK, ask))),  # asks we buy from
             "ev_exit",
             reduce_only=True,
             expected_edge=liq - hold,
@@ -101,7 +113,7 @@ def plan_exit(
     px = grid.snap_down(prob_to_price_floor(max(target, 0.0001)))
     if px is not None and ask is not None and px >= ask:
         px = grid.tick_below(ask)
-    if px is None:
+    if px is None or (qn := cap(BookSide.BID, px, n)) <= 0:
         return ExitPlan(None, None, liq, hold)
     return ExitPlan(
         None,
@@ -110,7 +122,7 @@ def plan_exit(
             slot,
             BookSide.BID,
             Price(px),
-            n,
+            qn,
             reduce_only_intent=True,
             expected_edge=q - px / PRICE_SCALE,
         ),
